@@ -117,10 +117,18 @@ an hour *sounds* thorough.
 | 95% sure of **seeing it at all** | 38 | **~3 hours** |
 | duty cycle to **±30% relative** | 165 | **~13 hours** |
 
-So an overnight run is the minimum useful unit of work for low-duty
-channels, and "an afternoon" — the phrase in `duty_cycles.md` §6 — is enough
-only for the 10–25% conventional-LMR figures that document actually wants,
-not for anything near 1%.
+**Those hours must be DAYTIME hours.** Land mobile is dispatch and business
+traffic, so a duty cycle pooled over the whole clock is diluted by the
+quiet hours and understates what a daylight operation meets. Taking
+08:00–18:00 as ten usable hours a day, the 1% channel needs about **one
+day** to be seen and **two days** to be estimated. Overnight data is worth
+keeping — the diurnal shape is a result in itself — but it belongs in a
+separate figure, not in the headline one. `merge_datasets.py --hours 08-18`
+is how that figure is produced.
+
+"An afternoon" — the phrase in `duty_cycles.md` §6 — is enough for the
+10–25% conventional-LMR figures that document actually wants, and not for
+anything near 1%.
 
 For the 22.5% TIA-603 figure the picture is much better: a 22.5% channel
 with dispatch-length transmissions is caught in nearly every visit, and an
