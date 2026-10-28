@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Survey output: datasets are data, not source. Keep them out of git and
+# merge them with tools/merge_datasets.py instead.
+data/
+out/
+*.log
