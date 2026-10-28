@@ -109,17 +109,37 @@ cycles.
 Settles the question an ear cannot: dead **audio** with the carrier up
 (interference duty still 100%) versus dead **carrier** (genuinely less).
 
-### Run C — the occupancy campaign (overnight minimum)
+### Run C — the occupancy campaign (**daytime**, several sessions)
 
 ```bash
 python -m occupancy_survey --config config.yaml \
     --channels channels.json --prediction prediction.json
 ```
 
-The actual deliverable. Overnight is the minimum useful unit: the 10–25%
-conventional-LMR figures resolve within an hour, but a 1% channel needs
-~3 h to be *seen* and ~13 h to be *estimated* to ±30%. Day/night variation
-is itself a result.
+The actual deliverable, and **the target is daytime, not duration.**
+
+Land mobile is dispatch, business and public-safety traffic, so its duty
+cycle is strongly diurnal — and the operations this feeds happen in
+daylight. **A figure pooled over the whole clock is diluted by the quiet
+hours and understates what a daytime operation meets**, which is an error
+in the dangerous direction and the same mistake `duty_cycles.md` §1 warns
+about: averaging across a condition that varies and quoting one number.
+
+Running overnight is fine and costs nothing — the data is kept and the
+diurnal shape is itself a result. But **the headline number is computed
+from daytime intervals only**, and the two are reported separately.
+
+Budget in *daytime* hours (taking 08:00–18:00, so ten per day):
+
+| goal | daytime hours | sessions |
+|---|---|---|
+| 10–25% conventional LMR to ±30% | ~1 h | one morning |
+| **1% channel: seen at all** | ~3 h | one day |
+| **1% channel: estimated to ±30%** | ~13 h | **two days** |
+
+So two full weekdays of daytime running is the realistic target for the
+low-duty channels, and a single morning settles the TIA-603-range figures
+that `duty_cycles.md` most wants.
 
 Keep a grid band in the schedule alongside the targeted list, or a busy
 channel with no FCC record cannot be found at all.
@@ -137,8 +157,13 @@ error bars, aliasing is not biting. If they diverge, it is.
 ## Phase 4 — results (analysis host)
 
 ```bash
-python tools/merge_datasets.py data/occ_*.json.gz --band vhf_lmr_low
-python tools/merge_datasets.py data/*.json.gz --json-out out/service.json
+# THE HEADLINE NUMBER: daytime only.
+python tools/merge_datasets.py data/occ_*.json.gz --hours 08-18 \
+    --band vhf_lmr_low --json-out out/service_daytime.json
+
+# The diurnal shape, and the 24-hour figure for comparison.
+python tools/merge_datasets.py data/occ_*.json.gz --by-hour vhf_lmr_low
+python tools/merge_datasets.py data/*.json.gz --json-out out/service_all.json
 
 python tools/validate_occupancy.py --prediction out/prediction.json \
     data/occ_*.json.gz --plot out/qth_validation.png
@@ -146,11 +171,16 @@ python tools/validate_occupancy.py --prediction out/prediction.json \
 
 Produces:
 
-1. **Service-level occupancy** — the deliverable. Reported two ways, and
-   the distinction matters: `active_channel_occupancy` is comparable with
-   the TIA-603 figures in `duty_cycles.md`, which describe a channel *in
-   use*; `mean_channel_occupancy` averages over all grid channels including
-   the empty ones.
+1. **Service-level occupancy, daytime** — the deliverable. Reported two
+   ways, and the distinction matters: `active_channel_occupancy` is
+   comparable with the TIA-603 figures in `duty_cycles.md`, which describe
+   a channel *in use*; `mean_channel_occupancy` averages over all grid
+   channels including the empty ones.
+   Without `--hours`, `merge_datasets.py` warns when the intervals span
+   more than eight hours of the clock, because the pooled figure is then
+   diluted by the quiet hours.
+1b. **The diurnal profile** (`--by-hour`) — a band busy 09:00–17:00 and
+   quiet at 03:00 tells an activator something a 24-hour mean does not.
 2. **The NWR keying answer** — period, duty, and whether the carrier stops.
 3. **The validation figure and report** — predicted vs measured, by
    continuity class, with the predicted-but-silent and busy-but-unpredicted

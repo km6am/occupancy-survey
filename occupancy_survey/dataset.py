@@ -47,6 +47,21 @@ def _utc_stamp(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _local_utc_offset_s(dt: datetime) -> float | None:
+    """Seconds east of UTC at the acquiring host, or None if unknown."""
+    local = dt.astimezone()
+    off = local.utcoffset()
+    return off.total_seconds() if off is not None else None
+
+
+def _local_hour(dt: datetime) -> float | None:
+    """Local hour of day (0-24, fractional) at the acquiring host."""
+    local = dt.astimezone()
+    if local.utcoffset() is None:
+        return None
+    return local.hour + local.minute / 60.0
+
+
 @dataclass
 class AcquisitionMetadata:
     """Everything needed to interpret one interval's numbers.
@@ -185,6 +200,15 @@ class IntervalDataset:
                     timezone.utc).isoformat(),
                 "duration_s": (self.interval_end
                                - self.interval_start).total_seconds(),
+                # Local time at the SITE, recorded per interval so that
+                # time-of-day analysis is possible and DST changes are
+                # handled. Land-mobile traffic is heavily daytime-weighted,
+                # so a duty cycle pooled over the whole clock is not the
+                # duty cycle an operator experiences in daylight -- it is
+                # diluted downward by the quiet hours. Without this field
+                # the distinction cannot be recovered after the fact.
+                "utc_offset_s": _local_utc_offset_s(self.interval_start),
+                "local_hour": _local_hour(self.interval_start),
             },
             "acquisition": self.metadata.to_dict(),
             "bands": self.bands,
@@ -322,6 +346,74 @@ def merge_channels(datasets, band_name: str,
                 m.bins_per_channel.add(int(bpc))
 
     return sorted(buckets.values(), key=lambda m: m.freq_hz)
+
+
+def filter_by_local_hour(datasets, start_hour: float, end_hour: float):
+    """Keep intervals whose LOCAL start hour falls in [start, end).
+
+    Time of day is not a refinement here. Land mobile is dispatch and
+    business traffic, so its duty cycle is strongly diurnal, and a SOTA
+    activation happens in daylight. A figure pooled over the whole clock is
+    diluted by the quiet hours and understates what an activator meets --
+    an error in the dangerous direction.
+
+    A window that wraps midnight (e.g. 22 to 6) is handled.
+
+    Intervals from before utc_offset_s was recorded are DROPPED rather than
+    assumed to be UTC, because a wrong assumption here silently shifts a
+    dataset by hours and the resulting figure would look fine.
+    """
+    out = []
+    for d in datasets:
+        hour = d.get("interval", {}).get("local_hour")
+        if hour is None:
+            continue
+        if start_hour <= end_hour:
+            keep = start_hour <= hour < end_hour
+        else:                       # window wraps midnight
+            keep = hour >= start_hour or hour < end_hour
+        if keep:
+            out.append(d)
+    return out
+
+
+def occupancy_by_local_hour(datasets, band_name: str,
+                            threshold_db: float | None = None,
+                            min_decided: int = 100) -> dict:
+    """Mean active-channel occupancy per local hour of day.
+
+    The diurnal shape is itself a result: a band that is busy 9-5 and quiet
+    at 3am tells an activator something a 24-hour average does not.
+    """
+    import numpy as _np
+
+    by_hour: dict[int, list] = {}
+    for d in datasets:
+        hour = d.get("interval", {}).get("local_hour")
+        if hour is None or band_name not in d.get("bands", {}):
+            continue
+        thr = threshold_db
+        if thr is None:
+            thr = d["acquisition"]["detection"]["threshold_db"]
+        for ch in d["bands"][band_name]["channels"]:
+            if ch["n_decided"] < min_decided:
+                continue
+            occ = ch.get("occupancy")
+            if occ is None or occ <= 0.0:
+                continue
+            by_hour.setdefault(int(hour), []).append(occ)
+
+    return {
+        "band": band_name,
+        "hours": {
+            str(h): {"n_channel_intervals": len(v),
+                     "mean_active_occupancy": float(_np.mean(v)),
+                     "max_occupancy": float(max(v))}
+            for h, v in sorted(by_hour.items())
+        },
+        "note": "local hour at the site; active channels only. A 24-hour "
+                "mean is not what a daylight activation meets.",
+    }
 
 
 def service_occupancy(datasets, threshold_db: float | None = None,

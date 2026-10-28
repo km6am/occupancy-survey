@@ -20,18 +20,30 @@ See [`backends/base.py`](occupancy_survey/backends/base.py).
 ## Quick start
 
 ```bash
-pip install -e .
-cp config.example.yaml config.yaml   # edit the site block
-python -m occupancy_survey --plan    # touches no hardware
-python -m occupancy_survey --backend synthetic --cycles 3
+pip install .
+cp config.example.yaml config.yaml          # edit the site block
+occupancy-survey --config config.yaml --check   # is this host ready?
+occupancy-survey --config config.yaml --plan    # what can it and can it not see?
+occupancy-survey --config config.yaml --backend synthetic --cycles 3
 ```
 
-`--plan` is the right first command: it prints the schedule, the detection
-edge, and what the configuration **cannot** see.
+Needs Python 3.10+, numpy and PyYAML. **Full instructions, per platform
+and per backend, are in [INSTALL.md](INSTALL.md)** — including GNU Radio
+and the SDRplay API, which are not pip-installable.
+
+`--check` and `--plan` touch no hardware. Run both before committing to
+anything long: `--plan` tells you what the configuration *cannot* see.
 
 Volunteers running an RTL-SDR should read
 [docs/volunteer-quickstart.md](docs/volunteer-quickstart.md) instead — one
 page, no radio knowledge assumed.
+
+> **Measure in the daytime.** Land mobile is dispatch and business
+> traffic, so its duty cycle is strongly diurnal. A figure pooled over the
+> whole clock is diluted by the quiet hours and understates what a daylight
+> operation meets. Run overnight if you like — the diurnal shape is a
+> result in itself — but compute the headline number with
+> `merge_datasets.py --hours 08-18`.
 
 ## The five choices that are the measurement
 
@@ -130,7 +142,8 @@ smoke test returned 11,980 predicted channels for one location.
 ## Merging
 
 ```bash
-python tools/merge_datasets.py data/occ_*.json.gz --band vhf_lmr_low
+python tools/merge_datasets.py data/occ_*.json.gz --hours 08-18 --band vhf_lmr_low
+python tools/merge_datasets.py data/occ_*.json.gz --by-hour vhf_lmr_low
 python tools/merge_datasets.py data/*.json.gz --threshold-db 14   # no re-acquisition
 ```
 
