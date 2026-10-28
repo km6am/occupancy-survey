@@ -1,0 +1,60 @@
+# Volunteer configuration for an RTL-SDR dongle.
+#
+# You only need to edit the three lines marked EDIT ME. Everything else is
+# chosen for you and should be left alone, so that datasets from different
+# volunteers can be compared.
+
+site:
+  # EDIT ME: any short name. Letters, numbers and dashes.
+  site_id: "CHANGE-ME"
+
+  # EDIT ME: whatever antenna you are using, in plain words.
+  # This matters. A channel that reads 0% because the antenna is indoors
+  # looks exactly like a channel nobody is using, and this line is the only
+  # thing that tells them apart. "rubber duck on a windowsill" is a useful
+  # answer; a blank is not.
+  antenna: "CHANGE-ME"
+
+  receiver_model: "RTL-SDR"
+
+  # OPTIONAL: your 4-character Maidenhead grid square, e.g. "CM87".
+  # 4 characters is about 100 x 160 km, which cannot identify you.
+  # DELETE THIS LINE ENTIRELY if you would rather share no location.
+  # The data is still useful without it.
+  grid_square: "CHANGE-ME-OR-DELETE"
+
+sdr:
+  backend: "rtl_sdr"
+  sample_rate_hz: 2048000
+  fft_size: 4096
+
+  # Fixed gain. Do not change this and do not set it to 0: 0 means the
+  # dongle picks its own gain, which moves the noise floor and makes the
+  # measurement meaningless.
+  gain: 40
+  device_index: 0
+
+sampling:
+  integration_s: 0.1
+  dwell_s: 20.0
+  revisit_target_s: 600.0
+  jitter_fraction: 0.25
+  interval_s: 3600.0
+  usable_fraction: 0.8
+
+detection:
+  threshold_db: 10.0
+  baseline_percentile: 25.0
+  baseline_window_sweeps: 64
+
+# VHF land mobile plus the two reference bands. NOAA Weather Radio and
+# broadcast FM are included on purpose: their transmitters are on all the
+# time, so they prove the receiver is working. Do not remove them.
+bands:
+  - vhf_lmr_low
+  - nwr
+  - vhf_lmr_high
+  - bcast_fm
+
+output:
+  dir: "./data"

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "occupancy-survey"
+version = "0.1.0"
+description = "Long-term channel-occupancy monitor: logs carrier-present fraction per channel, not content"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+
+# Deliberately minimal. The volunteer path needs numpy, PyYAML and the
+# `rtl_sdr` binary -- nothing else. GNU Radio, SoapySDR and matplotlib are
+# all optional extras, because requiring any of them would put a conda
+# install between a volunteer and their first dataset.
+dependencies = [
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# For tools/validate_occupancy.py only.
+plots = ["matplotlib>=3.7"]
+# For the RSPdx backend. Not pip-installable in practice -- gnuradio and
+# gr-sdrplay3 come from radioconda. Listed so the requirement is visible.
+rspdx = []
+
+[project.scripts]
+occupancy-survey = "occupancy_survey.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["occupancy_survey*"]

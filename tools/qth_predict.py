@@ -78,10 +78,14 @@ def run_sota_rf(summits_file: Path, out_dir: Path, radius_m: float,
             f"to populate the FCC cache; this tool will not fetch anything.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Absolute paths throughout: cwd is the scratch directory, so a relative
+    # --summits-file would be resolved against it and not found.
+    out_dir = out_dir.resolve()
+    summits_file = Path(summits_file).resolve()
     cmd = [sys.executable, str(SOTA_RF_SCRIPT),
            "--association", PSEUDO_ASSOCIATION,
            "--summits-file", str(summits_file),
-           "--data-dir", str(FCC_CACHE),
+           "--data-dir", str(FCC_CACHE.resolve()),
            "--out-dir", str(out_dir),
            "--no-download",
            "--radius", str(radius_m),
