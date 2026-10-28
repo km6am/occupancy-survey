@@ -1,0 +1,100 @@
+# Occupancy survey configuration. Copy to config.yaml and edit `site`.
+#
+# Every value here is written into every dataset, so a dataset can be
+# interpreted and merged without this file. Nothing may be left implicit.
+
+site:
+  # Required. How files from different receivers are kept apart when merged.
+  site_id: "home-1"
+
+  # Required. A quiet channel and a deaf receive path produce the same
+  # number, and only these fields tell them apart.
+  receiver_model: "SDRplay RSPdx"
+  antenna: "discone, roof mount"
+  antenna_height_m: 6.0
+  preamp: "none"
+  feedline: "RG-8X, 15 m"
+
+  # OPTIONAL and deliberately coarse. Maidenhead, 4 or 6 characters only
+  # (6 is about 5 x 8 km). Anything finer is refused, not truncated.
+  # Delete this line entirely to share no location at all -- the dataset is
+  # still valid and still mergeable.
+  grid_square: "CM87"
+
+  operator_note: ""
+
+sdr:
+  # synthetic | rtl_sdr | gnuradio
+  backend: "synthetic"
+
+  # For backend: gnuradio -- rspdx, rtlsdr, hackrf, lime, pluto, usrp, soapy
+  device_type: "rspdx"
+
+  sample_rate_hz: 2048000
+  fft_size: 4096
+
+  # FIXED GAIN, AGC OFF. There is no agc_enabled setting: an AGC moves the
+  # noise floor that every threshold here is relative to, so a survey taken
+  # with one is worthless and the config loader refuses the key.
+  #
+  # RSPdx gain is expressed as SDRplay does it -- a REDUCTION in dB, where
+  # larger means less gain.
+  if_gain_reduction_db: 40
+  rf_gain_reduction_db: 0
+  antenna_port: "Antenna B"
+
+  # For backend: rtl_sdr -- tuner gain in dB. Must be > 0; rtl_sdr treats
+  # 0 as automatic.
+  gain: 40
+  device_index: 0
+  ppm: 0
+
+sampling:
+  # Sets the shortest detectable burst: 0.1 s gives a ~25 ms floor at a
+  # 6 dB margin. See docs/sampling-design.md.
+  integration_s: 0.1
+
+  # Seconds per tune step per visit. Dwell-heavy beats revisit-heavy for a
+  # duty-cycle statistic.
+  dwell_s: 20.0
+
+  revisit_target_s: 600.0
+
+  # NOT a refinement. A fixed revisit period can alias against real traffic
+  # periodicity and return a confidently wrong answer rather than a noisy
+  # one. Setting this to 0 puts a warning in every dataset.
+  jitter_fraction: 0.25
+
+  # One output file per interval.
+  interval_s: 3600.0
+
+  # Central fraction of each tuning to trust; the edges roll off and carry
+  # tuner artefacts.
+  usable_fraction: 0.8
+
+  # Defaults to sdr.sample_rate_hz. Only set this if the receiver's usable
+  # passband is narrower than its sample rate -- setting it wider leaves
+  # gaps between tune steps that look like quiet channels.
+  # usable_bandwidth_hz: 2048000
+
+detection:
+  # dB above the baseline -- NOT an SNR. The baseline is a percentile of the
+  # max-bin statistic and already sits above the mean noise power, so a
+  # 10 dB threshold needs about 12.8 dB of SNR in a 12-bin channel. Run
+  # `--plan` to see the detection edge for your configuration.
+  threshold_db: 10.0
+  baseline_percentile: 25.0
+  baseline_window_sweeps: 64
+
+# Targets plus known-continuous controls. The controls calibrate the
+# threshold: if NOAA Weather Radio does not read ~100%, the threshold or the
+# receive path is wrong and the target numbers inherit the fault.
+bands:
+  - vhf_lmr_low
+  - nwr
+  - vhf_lmr_high
+  - uhf_lmr
+  - bcast_fm
+
+output:
+  dir: "./data"
