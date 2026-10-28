@@ -51,6 +51,10 @@ class _BandState:
     bins_per_channel: int = 0
     channels_observed: int = 0
     front_end: dict | None = None
+    # Visits contributing to this interval. The presence check needs it:
+    # what absence proves depends on how many independent looks there were.
+    visits: int = 0
+    dwell_total_s: float = 0.0
 
 
 class Survey:
@@ -60,7 +64,8 @@ class Survey:
                  design: SamplingDesign | None = None,
                  policy: ThresholdPolicy | None = None,
                  histogram: HistogramSpec | None = None,
-                 out_dir="./data", seed: int | None = None):
+                 out_dir="./data", seed: int | None = None,
+                 predicted_strongest: dict | None = None):
         self._bands: list[BandPlan] = list(bands)
         self._backend = backend
         self._site = site
@@ -68,6 +73,11 @@ class Survey:
         self._policy = policy or ThresholdPolicy()
         self._histogram = histogram or HistogramSpec()
         self._out_dir = out_dir
+        # band name -> the channel the prediction says should be loudest.
+        # Turns a presence check's one outcome into three: nothing at all
+        # (receive path), wrong channel strongest (prediction or antenna
+        # pattern), right channel (both agree).
+        self._predicted_strongest = dict(predicted_strongest or {})
         self._schedule = Schedule(self._bands, self._design, seed=seed)
 
         self._baselines: dict[tuple[str, int], BandBaseline] = {}
@@ -122,6 +132,9 @@ class Survey:
             st.bins_per_channel = carried["bins_per_channel"]
             st.channels_observed = carried["channels_observed"]
             st.front_end = carried["front_end"]
+            # Visits are NOT carried: they are a property of the interval
+            # being written, and the presence check must describe the looks
+            # that produced the data in that file.
         # A new interval gets fresh baselines. The alternative -- carrying
         # them -- would make the first minutes of each interval depend on
         # the last minutes of the previous one, which is harmless until an
@@ -141,7 +154,10 @@ class Survey:
                 # than written as all-zero. Occupancy null, not zero.
                 continue
             ds.add_band(band, st.accumulator, st.bins_per_channel,
-                        st.channels_observed, front_end=st.front_end)
+                        st.channels_observed, front_end=st.front_end,
+                        visits=st.visits, dwell_total_s=st.dwell_total_s,
+                        predicted_strongest_hz=self._predicted_strongest.get(
+                            band.name))
         if not ds.bands:
             logger.warning("interval produced no observed bands; nothing "
                            "written")
@@ -282,6 +298,8 @@ class Survey:
         st.bins_per_channel = max(st.bins_per_channel,
                                   extractor.bins_per_channel)
         st.channels_observed = max(st.channels_observed, extractor.n_observed)
+        st.visits += 1
+        st.dwell_total_s += float(dwell_s)
 
         if extractor.n_observed == 0:
             logger.warning(

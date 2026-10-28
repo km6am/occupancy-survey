@@ -54,6 +54,31 @@ def _build_backend(cfg: AppConfig):
     )
 
 
+def _predicted_strongest(path) -> dict:
+    """Per band, the channel the prediction says should be loudest.
+
+    Ranks on the uncalibrated ERP/d^2 proxy, which is an ORDERING and not a
+    level -- which is all this check needs, since it compares ranks.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    data = json.loads(_Path(path).read_text(encoding="utf-8"))
+    if not str(data.get("schema", "")).startswith(
+            "occupancy-survey/qth-prediction"):
+        raise ValueError(f"{path}: not a qth_predict.py prediction")
+
+    best: dict[str, tuple[float, float]] = {}
+    for ch in data.get("channels", []):
+        proxy = ch.get("field_proxy_w_per_m2")
+        if proxy is None:
+            continue
+        band = ch.get("band")
+        if band not in best or proxy > best[band][1]:
+            best[band] = (float(ch["freq_hz"]), float(proxy))
+    return {b: hz for b, (hz, _p) in best.items()}
+
+
 def _print_plan(cfg: AppConfig) -> None:
     bands = cfg.band_plans()
     sched = Schedule(bands, cfg.sampling)
@@ -104,6 +129,39 @@ def _print_plan(cfg: AppConfig) -> None:
         if w:
             warnings_seen.append(f"{b.name}: {w}")
 
+    # Bands whose absence would indict the receiver need enough looks for
+    # that to mean anything, and how many is a property of THIS schedule.
+    presence_bands = [b for b in bands
+                      if getattr(b, "presence", None)
+                      and b.presence.enabled]
+    if presence_bands:
+        from occupancy_survey.presence import min_detectable_duty
+        from occupancy_survey.schedule import tune_steps as _ts
+        print()
+        print("presence reference (absence here indicts the RECEIVER):")
+        for b in presence_bands:
+            steps = len(_ts(b, cfg.sampling))
+            per_cycle = steps * cfg.sampling.dwell_s
+            per_hour = (per_cycle * 3600.0 / summary["cycle_time_s"]
+                        if summary["cycle_time_s"] else 0.0)
+            visits_h = (steps * 3600.0 / summary["cycle_time_s"]
+                        if summary["cycle_time_s"] else 0.0)
+            print(f"  {b.name}: {per_hour/60:.1f} min of coverage per hour "
+                  f"({visits_h:.0f} visits/h)")
+            print(f"    {'run':>6}  {'visits':>7}  "
+                  f"detectable duty cycle (95% conf)")
+            for hours in (1, 2, 4, 8, 12):
+                n = max(1, int(visits_h * hours))
+                d = min_detectable_duty(n, cfg.sampling.dwell_s,
+                                        b.presence.cycle_s_max)
+                verdict = ("absence proves nothing" if d >= 1.0
+                           else f">= {100*d:.1f}%")
+                print(f"    {hours:4d} h  {n:7d}  {verdict}")
+            print("    Until that figure is small, 'nothing seen' is "
+                  "ambiguous between a")
+            print("    dead receive path and a carrier that was simply off "
+                  "when you looked.")
+
     print()
     print("catch probability for a periodic transmission:")
     rows = blind_spot_table(cfg.sampling,
@@ -129,6 +187,11 @@ def main(argv=None) -> int:
     ap.add_argument("--backend", help="override sdr.backend")
     ap.add_argument("--bands", help="comma-separated band names to override "
                                     "the configured schedule")
+    ap.add_argument("--prediction", metavar="JSON",
+                    help="qth_predict.py prediction, used to name the "
+                         "channel that should be STRONGEST in each "
+                         "presence-reference band. Turns 'nothing seen' "
+                         "into three distinguishable outcomes.")
     ap.add_argument("--channels", metavar="JSON",
                     help="targeted channel list from "
                          "tools/make_channel_list.py, used instead of the "
@@ -209,9 +272,20 @@ def main(argv=None) -> int:
         print(f"backend error: {e}", file=sys.stderr)
         return 3
 
+    predicted_strongest = {}
+    if args.prediction:
+        try:
+            predicted_strongest = _predicted_strongest(args.prediction)
+        except (ValueError, OSError, KeyError) as e:
+            print(f"prediction error: {e}", file=sys.stderr)
+            return 2
+        for band, hz in sorted(predicted_strongest.items()):
+            logger.info("predicted strongest in %s: %.4f MHz", band, hz / 1e6)
+
     with backend:
         survey = Survey(cfg.band_plans(), backend, cfg.site, cfg.sampling,
-                        cfg.detection, cfg.histogram, out_dir=cfg.out_dir)
+                        cfg.detection, cfg.histogram, out_dir=cfg.out_dir,
+                        predicted_strongest=predicted_strongest)
 
         if args.intermod_check:
             from occupancy_survey.schedule import tune_steps

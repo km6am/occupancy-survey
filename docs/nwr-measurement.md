@@ -33,6 +33,87 @@ about **availability**; *"the carrier is continuous"* is a claim about
 
 ---
 
+## 1b. What NWR *is* still good for: presence
+
+The duty-cycle claim was retracted. A **weaker and more robust** claim
+survives, and it needs no assumption about carrier keying at all:
+
+> Over a long enough observation, **NWR must appear.**
+
+If an extended look at 162.400–162.550 shows nothing, the fault is on the
+**measuring end** — threshold too high, gain wrong, antenna or feed broken,
+predicted channel wrong — because the NWS publishes the transmitter list and
+its coverage. **Absence contradicts published data, not an inference.** That
+is precisely why it holds where the duty-cycle version did not.
+
+### The precondition, which constrains the schedule
+
+Absence is only evidence if the observation could plausibly have caught a
+keyed carrier. A survey dwelling 1 s every 10 minutes could miss one
+legitimately, and "we did not see NWR" would then be ambiguous between a
+dead receive path and an aliased schedule — the worse failure, because it
+sends an operator to check hardware that is fine.
+
+So rather than a flat rule, `presence.min_detectable_duty()` computes what
+the observation actually bought, from the same catch-probability model as
+[sampling-design.md](sampling-design.md). **The default schedule gives NWR
+only 4.2 minutes of coverage per hour** (1.7 on an RTL-SDR), so:
+
+| run length | visits | detectable duty cycle (95%) | absence means |
+|---|---|---|---|
+| 1 h | 12 | ≥ 16.5% | **nothing** — inconclusive |
+| 2 h | 25 | ≥ 5.7% | weak evidence |
+| 4 h | 50 | ≥ 0.3% | **the receive path** |
+| 8 h+ | 100 | any duty | damning |
+
+`--plan` prints this table for *your* configuration. The verdict is gated on
+it: below the `conclusive_duty` threshold (default 10%) the check reports
+**`inconclusive`**, not `absent`, and says explicitly that it is not grounds
+to go looking for a hardware fault.
+
+Why 10%: a service broadcasting on a documented 3–6 minute cycle around the
+clock has a duty cycle of at least tens of percent *if it transmits at all*,
+and that much follows from the published cycle rather than from any claim
+about carrier continuity. The bound itself is always recorded, so a reader
+can apply a different cutoff without re-running anything.
+
+### The stronger version: which channel should be loudest
+
+NWR is seven fixed channels and the NWS publishes each transmitter's
+location and power, so the prediction can name the one that *should*
+dominate. That turns one outcome into three:
+
+| outcome | what it indicts |
+|---|---|
+| nothing at all | the **receive path** |
+| wrong channel strongest | the **prediction**, or the antenna pattern |
+| right channel, wrong level | the **path loss** |
+
+```bash
+python tools/qth_predict.py --lat <LAT> --lon <LON> --radius 90000 --bands nwr
+python -m occupancy_survey --config config.nwr.yaml --prediction out/qth_prediction/prediction.json
+```
+
+**Use a wide radius.** NWR transmitters run 300 W–1 kW and carry well past
+30 km. For CM87, a 30 km radius predicted **one** channel and a 90 km
+radius predicts **five** — so a thin NWR list is usually a radius artifact
+rather than a gap in the data:
+
+| channel | station | ERP/d² (uncalibrated) |
+|---|---|---|
+| **162.400** | **KHB49, San Francisco** | **1.6 × 10⁻⁵** |
+| 162.550 | KEC49, Monterey | 1.4 × 10⁻⁷ |
+| 162.450 | WWF64, Monterey Marine | 4.6 × 10⁻⁸ |
+| 162.425 | WNG655, Contra Costa County | 2.8 × 10⁻⁸ |
+| 162.500 | KDX54, Big Rock Ridge | 1.4 × 10⁻⁸ |
+
+KHB49 dominates by roughly **20 dB**, which makes this an unusually clean
+prediction to test: if anything on 162.400–162.550 is audible at CM87 and
+it is *not* 162.400, the prediction or the antenna pattern is wrong, and the
+receive path is demonstrably fine.
+
+---
+
 ## 2. The question, and why your ear cannot answer it
 
 | what is happening | interference duty |

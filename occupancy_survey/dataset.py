@@ -114,8 +114,9 @@ class IntervalDataset:
     bands: dict = field(default_factory=dict)
 
     def add_band(self, band, accumulator, bins_per_channel: int,
-                 channels_observed: int, front_end: dict | None = None
-                 ) -> None:
+                 channels_observed: int, front_end: dict | None = None,
+                 visits: int = 0, dwell_total_s: float = 0.0,
+                 predicted_strongest_hz: float | None = None) -> None:
         from occupancy_survey.detector import (false_alarm_rate,
                                                occupancy_floor_warning)
         thr = self.metadata.detection.get("threshold_db")
@@ -153,10 +154,25 @@ class IntervalDataset:
             "integration_s": self.metadata.sampling.get("integration_s"),
             "timing_note": "runs/gaps/keying are in SWEEPS; multiply by "
                            "integration_s for seconds",
+            "visits": int(visits),
             "summary": accumulator.stats.summary(),
             "control_check": accumulator.control_check(),
             "channels": accumulator.channel_records(),
         }
+        # A band whose absence indicts the receiver gets a presence check,
+        # which is a different and weaker claim than a control's. See
+        # occupancy_survey/presence.py.
+        presence = getattr(band, "presence", None)
+        if presence is not None and presence.enabled:
+            from occupancy_survey.presence import presence_check
+            mean_dwell = (dwell_total_s / visits) if visits else 0.0
+            entry["presence_check"] = presence_check(
+                entry["channels"], self.metadata.histogram,
+                self.metadata.sampling.get("integration_s") or 0.0,
+                n_visits=visits, dwell_s=mean_dwell, reference=presence,
+                predicted_strongest_hz=predicted_strongest_hz)
+        else:
+            entry["presence_check"] = None
         self.bands[band.name] = entry
 
     def to_dict(self) -> dict:

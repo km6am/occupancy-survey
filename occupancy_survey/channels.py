@@ -261,7 +261,16 @@ class BandPlan:
     explicit_channels_hz: tuple[float, ...] = field(default_factory=tuple)
     front_end: FrontEnd = field(default_factory=FrontEnd)
     targeted: bool = False
+    # Absence of this band indicts the receiver rather than the band. A
+    # weaker claim than a control's -- it says nothing about duty cycle --
+    # and more robust for exactly that reason. See presence.py.
+    presence: "PresenceReference" = None
     note: str = ""
+
+    def __post_init__(self):
+        if self.presence is None:
+            from occupancy_survey.presence import PresenceReference
+            object.__setattr__(self, "presence", PresenceReference())
 
     @property
     def span_hz(self) -> float:
@@ -294,6 +303,24 @@ class BandPlan:
                     label=f"{self.name}:{f / 1e6:.4f}")
             for f in freqs
         ]
+
+
+def _nwr_presence():
+    """NWR as a PRESENCE reference -- the surviving half of the retraction.
+
+    The duty-cycle claim was withdrawn because carrier keying is not
+    documented. This one does not need it: over a long enough observation
+    NWR must appear, because the NWS publishes the transmitter list and
+    coverage, so absence contradicts PUBLISHED DATA rather than an
+    inference. It indicts the measuring end, not the band.
+    """
+    from occupancy_survey.presence import PresenceReference
+    return PresenceReference(
+        enabled=True,
+        basis="NWS publishes the transmitter list and coverage, so an "
+              "extended observation that sees nothing indicts the receive "
+              "path. Says nothing about duty cycle -- that claim was "
+              "retracted 2026-10-28 and is now a measurement target.")
 
 
 # NOAA Weather Radio: seven exact channels, not a grid.
@@ -350,6 +377,7 @@ BAND_PLANS: dict[str, BandPlan] = {
         channel_step_hz=25_000.0, channel_bandwidth_hz=16_000.0,
         service="NWR", role=TARGET, expected_occupancy=None,
         explicit_channels_hz=NWR_CHANNELS_HZ,
+        presence=_nwr_presence(),
         front_end=FrontEnd(
             rf_notch=True, dab_notch=True,
             external="150-174 MHz bandpass (same as the VHF targets)",
