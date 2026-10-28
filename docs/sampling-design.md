@@ -24,9 +24,27 @@ a duty-cycle statistic, time on channel is worth more than frequency of
 return: a long dwell gives many samples of one channel, and occupancy is a
 fraction of time, not a count of events.
 
-With the default five-band schedule this comes to 14 tune steps, a **287 s
-cycle**, and about **12 visits per tune step per hour**, with the receiver
-listening 97% of the wall clock.
+### Cycle time depends on the receiver's bandwidth, not just the schedule
+
+A band wider than the receiver's usable bandwidth is covered in several
+tunings, so the same schedule costs very different airtime on different
+hardware — and every catch probability in §3 scales with it:
+
+| configuration | tune steps | cycle | visits/h | P(1% channel seen in 1 h) |
+|---|---|---|---|---|
+| RSPdx @ 6 MHz, 5 bands | 14 | 287 s | 12 | **0.62** |
+| RTL-SDR @ 2.048 MHz, 5 bands | 34 | 697 s | 5 | **0.33** |
+| RTL-SDR @ 2.048 MHz, volunteer's 4 bands | 21 | 430 s | 8 | **0.47** |
+
+**The figures in the rest of this document are the first row**, 6 MHz, which
+is what `SamplingDesign()`'s defaults assume. An RTL-SDR at 2.048 Msps
+roughly halves every catch probability, because the 20 MHz UHF band alone
+costs it 10 tune steps. That is the main reason the volunteer schedule drops
+`uhf_lmr`: it is most of the airtime for the band least likely to be heard
+on a whip.
+
+`--plan` prints the figures for **your** configuration. Use those, not
+these.
 
 ---
 

@@ -94,9 +94,10 @@ Leave it running. It writes one file per hour into `data/`. Press `Ctrl-C`
 to stop; the hour in progress is finished and saved.
 
 **Overnight is the minimum useful run.** A few hours is better. Quiet
-channels need a lot of listening before "quiet" means anything — a channel
-used for 3 seconds every 5 minutes is only spotted about 60% of the time in
-an hour.
+channels need a lot of listening before "quiet" means anything — on an
+RTL-SDR with these settings, a channel used for 3 seconds every 5 minutes is
+only spotted about **half** the time in an hour. Busy channels settle down
+much faster.
 
 ---
 

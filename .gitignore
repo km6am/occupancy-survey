@@ -10,3 +10,7 @@ dist/
 data/
 out/
 *.log
+
+# A site's own config carries its grid square and gain settings.
+# Start from config.example.yaml or config.volunteer.yaml.
+config.yaml
