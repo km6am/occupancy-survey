@@ -207,6 +207,13 @@ def main(argv=None) -> int:
                          "generate its own signals? Opens the SDR.")
     ap.add_argument("--gain-step-db", type=float, default=6.0,
                     help="gain reduction for --intermod-check (default 6)")
+    ap.add_argument("--check", action="store_true",
+                    help="is this host ready? Verifies imports, binaries, "
+                         "config, disk and clock. Does NOT open the SDR "
+                         "unless --device is also given.")
+    ap.add_argument("--device", action="store_true",
+                    help="with --check, also open the SDR and take one "
+                         "sweep")
     ap.add_argument("--plan", action="store_true",
                     help="print the sampling design and its bounds, then "
                          "exit. Touches no hardware.")
@@ -252,6 +259,23 @@ def main(argv=None) -> int:
             "channel with no FCC record -- run a grid schedule alongside it "
             "if that matters.",
             sum(len(b.channels()) for b in cfg.targeted_bands))
+
+    if args.check:
+        from occupancy_survey.preflight import run_preflight
+        pf = run_preflight(cfg, probe_device=args.device)
+        print(f"preflight on {cfg.site.site_id} "
+              f"({cfg.sdr.backend} backend)")
+        print(pf.report())
+        print()
+        if pf.failures:
+            print(f"NOT READY: {len(pf.failures)} check(s) failed.")
+            return 6
+        if pf.untested:
+            print("Ready as far as this can tell. Not tested: "
+                  + ", ".join(c.name for c in pf.untested) + ".")
+        else:
+            print("Ready.")
+        return 0
 
     if args.plan:
         if args.json:

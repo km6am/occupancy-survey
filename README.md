@@ -192,6 +192,38 @@ interval, which turns a 20% duty cycle into a continuous carrier 7 dB
 weaker — the §1 mistake of `duty_cycles.md` moved out of the model and into
 the measurement.
 
+## Deploying to a survey host
+
+This package is developed on one machine and **runs on another**, so the two
+roles have deliberately different dependencies:
+
+| role | needs | does |
+|---|---|---|
+| **survey host** | numpy, PyYAML, a backend | runs unattended, writes interval files |
+| **analysis host** | + `sota-rf`, pandas, matplotlib | predicts, merges, validates, plots |
+
+The survey host never needs `sota-rf` or a 400 MB FCC download: a targeted
+channel list is a small JSON generated on the analysis host and copied
+across. Point the analysis tools at a different checkout with
+`SOTA_RF_DIR=/path/to/sota-rf`.
+
+Before any long run, on the machine that will do the surveying:
+
+```bash
+python -m occupancy_survey --check            # imports, config, disk, clock
+python -m occupancy_survey --check --device   # also opens the SDR, one sweep
+```
+
+`--check` does **not** open the radio; `--device` opts into that and reports
+bin count, span and clip fraction. It flags an overloaded front end straight
+away, which is the failure most worth catching before committing to an
+overnight run.
+
+**Data volume is not a constraint.** Measured at **57 kB gzipped per hourly
+interval** for the full five-band schedule — 1.4 MB/day, 513 MB/year. The
+histograms compress about 66× because most channels are empty. `--check`
+reports headroom in days against the configured interval.
+
 ## Tests
 
 ```bash

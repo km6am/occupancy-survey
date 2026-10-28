@@ -73,12 +73,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 SCHEMA = "occupancy-survey/channel-list/1"
-DEFAULT_SUMMIT_CSV = Path.home() / "sota-rf" / "W6_rf_sources.csv"
+DEFAULT_SUMMIT_CSV = Path(
+    os.environ.get("SOTA_RF_DIR", Path.home() / "sota-rf")
+).expanduser() / "W6_rf_sources.csv"
 
 
 def load_summit_emitters(path: Path) -> dict[str, list[dict]]:

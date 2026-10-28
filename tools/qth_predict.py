@@ -31,11 +31,16 @@ import argparse
 import csv
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-SOTA_RF_DIR = Path.home() / "sota-rf"
+# Overridable, because the machine that ANALYSES is not necessarily the
+# machine that SURVEYS. The survey host needs numpy and a backend; this
+# tool needs sota-rf and its FCC cache, and the two rarely coincide.
+SOTA_RF_DIR = Path(os.environ.get("SOTA_RF_DIR",
+                                  Path.home() / "sota-rf")).expanduser()
 SOTA_RF_SCRIPT = SOTA_RF_DIR / "sota_rf_sources.py"
 FCC_CACHE = SOTA_RF_DIR / "fccdata"
 

@@ -18,12 +18,18 @@ The IQ ring buffer, the narrowband extractor and the recorder from
 cw_recorder are all absent, deliberately: no path here can produce audio or
 IQ. See backends/base.py.
 
-ON THIS MAC, as of 2026-10-28, this backend does not import. Two independent
-breakages, both user-fixable without sudo, with the exact commands in
-docs/rspdx-on-macos.md:
-  1. radioconda's numpy is broken, so scipy and matplotlib go with it.
-  2. gnuradio.sdrplay3 looks for @rpath/libsdrplay_api.so.3 with rpath
-     ~/radioconda/lib, while the API lives in /usr/local/lib.
+GNU Radio is not pip-installable, so this backend's availability is a
+property of the host rather than of this package. Run
+
+    python -m occupancy_survey --check
+
+on the machine that will do the surveying; it reports what is missing and
+what to do about it, without opening the radio. Add --device to also take
+one sweep.
+
+The development Mac this package was written on has two unrelated breakages
+of its own, written up in docs/rspdx-on-macos.md. That document is a
+troubleshooting note for ONE host, not a prerequisite for the project.
 """
 
 from __future__ import annotations
@@ -47,10 +53,11 @@ def _gr():
         return gr, blocks, fft
     except ImportError as e:
         raise ImportError(
-            f"GNU Radio is not importable: {e}. On this Mac, see "
-            f"docs/rspdx-on-macos.md -- radioconda's numpy and the "
-            f"gr-sdrplay3 library path both need repairing, and neither "
-            f"needs sudo."
+            f"GNU Radio is not importable: {e}. GNU Radio is not "
+            f"pip-installable -- install radioconda or your distribution's "
+            f"gnuradio package and run from that environment. "
+            f"`python -m occupancy_survey --check` reports what is missing "
+            f"on this host."
         ) from e
 
 

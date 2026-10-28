@@ -1,8 +1,18 @@
-# Getting the RSPdx working on this Mac
+# Getting the RSPdx working on one particular Mac
 
-**Measured on 2026-10-28** on the machine this repo was written on
-(Darwin 24.6.0, Apple silicon). Each failure below was reproduced from a
-neutral working directory. None of the fixes needs `sudo`.
+> **This is a troubleshooting note for a single host, not a prerequisite
+> for the project.** This package is developed on this Mac and intended to
+> *run elsewhere*. If you are deploying to a different machine, you do not
+> need anything on this page — run
+> `python -m occupancy_survey --check` on that machine instead, which
+> reports what is missing there and what to do about it.
+>
+> Keep reading only if you want the RSPdx working on *this* development
+> Mac, for local smoke-testing.
+
+**Measured on 2026-10-28** (Darwin 24.6.0, Apple silicon). Each failure
+below was reproduced from a neutral working directory. None of the fixes
+needs `sudo`.
 
 **Nothing here has been run.** These are proposed commands for the operator
 to run, because repairing a shared conda environment and touching a device
