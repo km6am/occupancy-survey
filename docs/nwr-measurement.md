@@ -54,17 +54,50 @@ legitimately, and "we did not see NWR" would then be ambiguous between a
 dead receive path and an aliased schedule — the worse failure, because it
 sends an operator to check hardware that is fine.
 
-So rather than a flat rule, `presence.min_detectable_duty()` computes what
-the observation actually bought, from the same catch-probability model as
-[sampling-design.md](sampling-design.md). **The default schedule gives NWR
-only 4.2 minutes of coverage per hour** (1.7 on an RTL-SDR), so:
+**Detection is fast; absence is slow.** These are not symmetric and the
+tables below are easy to misread as though they were:
+
+- **Seeing NWR once settles the presence check immediately.** If the
+  carrier is up most of the time — which is the current expectation — a
+  *single* 20 s visit catches it with ~96% probability at a 90% duty cycle.
+  One hour is overwhelming.
+- **Not seeing it** proves nothing until the observation was strong enough
+  to have caught whatever duty cycle NWR actually has.
+
+| assumed duty | P(caught in **one** 20 s visit) | in 1 h (12 visits) |
+|---|---|---|
+| 95% | 1.000 | 1.0000 |
+| 90% | 0.956 | 1.0000 |
+| 75% | 0.806 | 1.0000 |
+| 50% | 0.556 | 0.9999 |
+| 25% | 0.306 | 0.9874 |
+| 10% | 0.156 | 0.8685 |
+
+So the table that follows is about the **absence** case only.
+
+> **Do not read "4.2 minutes of coverage per hour" as a statement about
+> NOAA.** It is how long the *receiver looks at* this band per hour under
+> the band-stepping schedule — the other 55.8 minutes it is tuned to VHF
+> LMR, UHF LMR and broadcast FM. NWR's own duty cycle is the unknown this
+> survey exists to measure.
+
+`presence.min_detectable_duty()` computes what the observation bought, from
+the same catch-probability model as
+[sampling-design.md](sampling-design.md). The default schedule gives NWR
+4.2 minutes of coverage per hour (1.7 on an RTL-SDR), so **an absence
+result** means:
 
 | run length | visits | detectable duty cycle (95%) | absence means |
 |---|---|---|---|
-| 1 h | 12 | ≥ 16.5% | **nothing** — inconclusive |
-| 2 h | 25 | ≥ 5.7% | weak evidence |
+| 1 h | 12 | ≥ 16.5% | rules out a mostly-on carrier already |
+| 2 h | 25 | ≥ 5.7% | rules out a moderately keyed one |
 | 4 h | 50 | ≥ 0.3% | **the receive path** |
 | 8 h+ | 100 | any duty | damning |
+
+If NWR is mostly-on as expected, the first row is already enough: an hour of
+silence would rule out a ≥16.5% duty carrier, which contradicts the
+expectation and indicts the receive path. The longer runs matter only if
+the carrier turns out to be sparse.
 
 `--plan` prints this table for *your* configuration. The verdict is gated on
 it: below the `conclusive_duty` threshold (default 10%) the check reports
