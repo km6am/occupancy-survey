@@ -27,13 +27,16 @@ from __future__ import annotations
 
 import logging
 import time
+
+import numpy as np
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from occupancy_survey.channels import BandPlan
 from occupancy_survey.dataset import AcquisitionMetadata, IntervalDataset
 from occupancy_survey.detector import (BandBaseline, ChannelLevelExtractor,
-                                       ThresholdPolicy, decide)
+                                       ThresholdPolicy, baseline_grid,
+                                       decide)
 from occupancy_survey.occupancy import BandAccumulator, HistogramSpec
 from occupancy_survey.schedule import SamplingDesign, Schedule
 from occupancy_survey.site import SiteMetadata
@@ -47,6 +50,7 @@ class _BandState:
     accumulator: BandAccumulator
     bins_per_channel: int = 0
     channels_observed: int = 0
+    front_end: dict | None = None
 
 
 class Survey:
@@ -71,6 +75,7 @@ class Survey:
         self._interval_start: datetime | None = None
         self._written: list = []
         self._bandwidth_checked = False
+        self._applied_front_end: str | None = None
 
         for w in self._schedule.warnings():
             logger.warning("sampling design: %s", w)
@@ -112,7 +117,7 @@ class Survey:
                 # than written as all-zero. Occupancy null, not zero.
                 continue
             ds.add_band(band, st.accumulator, st.bins_per_channel,
-                        st.channels_observed)
+                        st.channels_observed, front_end=st.front_end)
         if not ds.bands:
             logger.warning("interval produced no observed bands; nothing "
                            "written")
@@ -187,14 +192,40 @@ class Survey:
         self._bandwidth_checked = True
 
     def _visit(self, band: BandPlan, step, dwell_s: float) -> None:
+        st = self._state[band.name]
+
+        # Filters belong to the band, not the session. Applying them before
+        # the retune means the noise floor settles once, not twice.
+        if self._applied_front_end != band.name:
+            st.front_end = self._backend.set_filters(band.front_end)
+            self._applied_front_end = band.name
+            # A notch change reshapes the passband, so every baseline taken
+            # under the old filter state is now wrong.
+            self._baselines.clear()
+        elif st.front_end is None:
+            st.front_end = self._backend.set_filters(band.front_end)
+
         self._backend.tune(step.center_hz, step.span_hz)
         axis = self._backend.freq_axis()
         if not self._bandwidth_checked:
             self._check_bandwidth(axis)
 
-        channels = self._state[band.name].accumulator.channels
+        channels = st.accumulator.channels
         extractor = ChannelLevelExtractor(
             channels, axis, usable_fraction=self._design.usable_fraction)
+
+        # The noise floor is measured from a uniform grid across the whole
+        # passband, NOT from the channels being recorded. For a grid band
+        # the two would agree; for a TARGETED band they would not, because
+        # every targeted channel is there precisely because a transmitter
+        # is expected on it. Pooling the baseline over those would let it
+        # ride up into the signals and bias occupancy down. See
+        # detector.baseline_grid().
+        grid = baseline_grid(step.center_hz,
+                             step.span_hz * self._design.usable_fraction,
+                             band.channel_bandwidth_hz)
+        grid_extractor = ChannelLevelExtractor(
+            grid, axis, usable_fraction=self._design.usable_fraction)
 
         key = (band.name, step.index)
         baseline = self._baselines.get(key)
@@ -202,7 +233,6 @@ class Survey:
             baseline = BandBaseline(self._policy)
             self._baselines[key] = baseline
 
-        st = self._state[band.name]
         st.bins_per_channel = max(st.bins_per_channel,
                                   extractor.bins_per_channel)
         st.channels_observed = max(st.channels_observed, extractor.n_observed)
@@ -216,10 +246,81 @@ class Survey:
             return
 
         for sweep in self._backend.sweeps(dwell_s):
+            b = baseline.update(grid_extractor.levels_db(sweep.spectrum_db))
             levels = extractor.levels_db(sweep.spectrum_db)
             st.accumulator.add_sweep(
-                decide(levels, baseline.update(levels), self._policy),
+                decide(levels, b, self._policy),
                 clip_fraction=sweep.clip_fraction)
+
+
+    def intermod_check(self, band: BandPlan, step, sweeps: int = 40,
+                       gain_step_db: float = 6.0) -> dict | None:
+        """Paired-gain measurement on one tune step.
+
+        Returns None when the backend cannot change gain, rather than
+        faking a pass -- a diagnostic that cannot run must say so.
+
+        The two measurements are taken back to back on the same tuning so
+        that as little as possible changes between them. Intermittent
+        traffic is still a confound: a channel that stops transmitting
+        between the two looks like a high-order product, which is why
+        intermod.classify() only assesses channels present in both and why
+        the result is a suspicion rather than a verdict.
+        """
+        from occupancy_survey.intermod import classify, summarise
+
+        # Deliberately independent of interval state: this is a diagnostic
+        # that should be runnable before any survey has started, which is
+        # exactly when an operator wants it.
+        front_end = self._backend.set_filters(band.front_end)
+        self._backend.tune(step.center_hz, step.span_hz)
+        axis = self._backend.freq_axis()
+
+        channels = band.channels()
+        extractor = ChannelLevelExtractor(
+            channels, axis, usable_fraction=self._design.usable_fraction)
+        grid = baseline_grid(step.center_hz,
+                             step.span_hz * self._design.usable_fraction,
+                             band.channel_bandwidth_hz)
+        grid_extractor = ChannelLevelExtractor(
+            grid, axis, usable_fraction=self._design.usable_fraction)
+
+        def measure() -> np.ndarray:
+            baseline = BandBaseline(self._policy)
+            rows = []
+            for i, sweep in enumerate(self._backend.sweeps(
+                    sweeps * self._design.integration_s)):
+                b = baseline.update(
+                    grid_extractor.levels_db(sweep.spectrum_db))
+                if b is None:
+                    continue
+                levels = extractor.levels_db(sweep.spectrum_db)
+                rows.append(levels - b)
+                if len(rows) >= sweeps:
+                    break
+            if not rows:
+                return np.full(len(channels), np.nan)
+            # Median over sweeps: robust to a channel keying mid-measurement.
+            return np.nanmedian(np.vstack(rows), axis=0)
+
+        before = measure()
+        if not self._backend.set_gain_offset_db(-abs(gain_step_db)):
+            logger.warning("%s: backend cannot change gain; intermod check "
+                           "skipped", band.name)
+            return None
+        try:
+            after = measure()
+        finally:
+            self._backend.set_gain_offset_db(0.0)
+
+        results = classify([c.freq_hz for c in channels], before, after,
+                           abs(gain_step_db),
+                           present_threshold_db=self._policy.threshold_db)
+        out = summarise(results)
+        out["band"] = band.name
+        out["center_hz"] = step.center_hz
+        out["front_end"] = front_end
+        return out
 
 
 class _Done(Exception):

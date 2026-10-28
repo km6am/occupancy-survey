@@ -106,6 +106,14 @@ def _create_rspdx_source(config):
     source.set_gain(-config.rf_gain_reduction_db, "RF")
     source.set_antenna(config.antenna_port)
     source.set_hdr_mode(getattr(config, "hdr_mode", False))
+    # Notch filters are set per BAND at run time, not here; see
+    # GnuRadioBackend.set_filters(). Start with them off so the initial
+    # state is known rather than inherited from the last application that
+    # touched the device.
+    for setter in ("set_rf_notch_filter", "set_dab_notch_filter"):
+        fn = getattr(source, setter, None)
+        if fn is not None:
+            fn(False)
     source.set_biasT(getattr(config, "biasT", False))
     source.set_dc_offset_mode(getattr(config, "dc_offset_correction", True))
     source.set_iq_balance_mode(getattr(config, "iq_balance_correction", True))

@@ -160,6 +160,12 @@ def parse_emitters(csv_path: Path, bands) -> list[dict]:
                     "freq_hz": hz,
                     "band": band[0],
                     "band_role": band[1],
+                    # Carried so the summit tag is a join rather than a
+                    # second expensive sota-rf run: rf_ref identifies the
+                    # same emitter in that tool's per-summit output.
+                    "rf_ref": (rec.get("rf_ref") or "").strip(),
+                    "rf_lat": rec.get("rf_lat"),
+                    "rf_lon": rec.get("rf_lon"),
                     "owner": (rec.get("rf_owner") or "").strip()[:60],
                     "service": service,
                     "continuity": cont.continuity,

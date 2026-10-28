@@ -64,6 +64,27 @@ class Backend(abc.ABC):
     def sweeps(self, dwell_s: float):
         """Yield Sweep objects for about `dwell_s` seconds."""
 
+    def set_filters(self, front_end) -> dict:
+        """Apply a band's front-end filter plan; return what was applied.
+
+        The default records the request and actuates nothing, which is the
+        honest answer for a receiver with no switchable filters. The
+        returned dict goes into the dataset either way, because a reader
+        needs to know whether the FM notch was ON, OFF, or simply absent.
+        """
+        return {**front_end.as_metadata(), "actuated": False,
+                "actuated_note": "this receiver has no switchable filters; "
+                                 "the plan is recorded, not applied"}
+
+    def set_gain_offset_db(self, offset_db: float) -> bool:
+        """Shift gain by `offset_db` for the intermod check; False if fixed.
+
+        Used only by the paired-gain diagnostic, which needs to change gain
+        deliberately and put it back. A backend that cannot do this returns
+        False and the diagnostic is skipped rather than faked.
+        """
+        return False
+
     def close(self) -> None:
         """Release the device. Safe to call twice."""
 

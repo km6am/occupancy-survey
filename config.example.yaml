@@ -15,6 +15,13 @@ site:
   preamp: "none"
   feedline: "RG-8X, 15 m"
 
+  # What is physically in the coax ahead of the receiver. RECORDED, never
+  # actuated -- the tool cannot see it, and it matters more than almost
+  # anything else here. An unfiltered wideband front end near broadcast
+  # transmitters generates its own signals, and that error correlates with
+  # real traffic instead of averaging out. See docs/front-end.md.
+  front_end_filters: "none"
+
   # OPTIONAL and deliberately coarse. Maidenhead, 4 or 6 characters only
   # (6 is about 5 x 8 km). Anything finer is refused, not truncated.
   # Delete this line entirely to share no location at all -- the dataset is
@@ -24,21 +31,32 @@ site:
   operator_note: ""
 
 sdr:
-  # synthetic | rtl_sdr | gnuradio
-  backend: "synthetic"
+  # gnuradio | rtl_sdr | synthetic
+  # `gnuradio` is the path for a high-performance receiver (RSPdx, RSPduo,
+  # USRP). It is the one that can actuate the per-band notch filters.
+  backend: "gnuradio"
 
   # For backend: gnuradio -- rspdx, rtlsdr, hackrf, lime, pluto, usrp, soapy
   device_type: "rspdx"
 
-  sample_rate_hz: 2048000
-  fft_size: 4096
+  # Wider is better here: fewer tune steps, so a shorter cycle and more
+  # visits per hour. The RSPdx will do 6-10 MHz. usable_bandwidth_hz
+  # follows this automatically.
+  sample_rate_hz: 6000000
+  fft_size: 8192
 
   # FIXED GAIN, AGC OFF. There is no agc_enabled setting: an AGC moves the
   # noise floor that every threshold here is relative to, so a survey taken
   # with one is worthless and the config loader refuses the key.
   #
   # RSPdx gain is expressed as SDRplay does it -- a REDUCTION in dB, where
-  # larger means less gain.
+  # larger means less gain. Set it once for a campaign: a run whose gain
+  # changed midway cannot be pooled across the change. Verify the choice
+  # with `--intermod-check` before collecting anything.
+  #
+  # The notch filters are NOT set here. They are per BAND -- the FM notch
+  # is on for land mobile and off for the FM control band -- and the tool
+  # actuates them on each band change. See docs/front-end.md.
   if_gain_reduction_db: 40
   rf_gain_reduction_db: 0
   antenna_port: "Antenna B"

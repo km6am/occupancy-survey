@@ -51,6 +51,12 @@ class SiteMetadata:
     antenna_height_m: float | None = None
     preamp: str = "none"
     feedline: str = "unspecified"
+    # What is physically in the coax ahead of the receiver. Recorded, never
+    # actuated -- the tool cannot see it. It matters more than almost
+    # anything else here: an unfiltered wideband front end near broadcast
+    # transmitters generates its own signals, and that error correlates
+    # with real traffic rather than averaging out. See docs/front-end.md.
+    front_end_filters: str = "none"
     operator_note: str = ""
 
     def __post_init__(self):
@@ -99,5 +105,6 @@ class SiteMetadata:
             "antenna_height_m": self.antenna_height_m,
             "preamp": self.preamp,
             "feedline": self.feedline,
+            "front_end_filters": self.front_end_filters,
             "operator_note": self.operator_note,
         }

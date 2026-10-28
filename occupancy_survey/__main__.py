@@ -133,6 +133,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cycles", type=int, help="stop after N full passes")
     ap.add_argument("--duration", type=float, metavar="S",
                     help="stop after S seconds")
+    ap.add_argument("--intermod-check", action="store_true",
+                    help="paired-gain diagnostic: does this front end "
+                         "generate its own signals? Opens the SDR.")
+    ap.add_argument("--gain-step-db", type=float, default=6.0,
+                    help="gain reduction for --intermod-check (default 6)")
     ap.add_argument("--plan", action="store_true",
                     help="print the sampling design and its bounds, then "
                          "exit. Touches no hardware.")
@@ -189,6 +194,28 @@ def main(argv=None) -> int:
     with backend:
         survey = Survey(cfg.band_plans(), backend, cfg.site, cfg.sampling,
                         cfg.detection, cfg.histogram, out_dir=cfg.out_dir)
+
+        if args.intermod_check:
+            from occupancy_survey.schedule import tune_steps
+            any_run = False
+            for band in cfg.band_plans():
+                for step in tune_steps(band, cfg.sampling):
+                    out = survey.intermod_check(
+                        band, step, gain_step_db=args.gain_step_db)
+                    if out is None:
+                        print(f"{band.name}: backend cannot change gain; "
+                              f"diagnostic not run", file=sys.stderr)
+                        continue
+                    any_run = True
+                    print(f"\n{band.name} @ {step.center_hz/1e6:.3f} MHz "
+                          f"({out['channels_assessable']} assessable, "
+                          f"{out['channels_suspect']} suspect)")
+                    for c in out["suspect_channels"][:10]:
+                        print(f"    {c['freq_hz']/1e6:10.4f} MHz  order "
+                              f"{c['implied_order']:4.2f}  {c['verdict']}")
+                    print(f"  {out['advice']}")
+            return 0 if any_run else 5
+
         try:
             written = survey.run(cycles=args.cycles, duration_s=args.duration)
         except ValueError as e:

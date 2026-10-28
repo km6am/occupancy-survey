@@ -345,6 +345,48 @@ class ChannelLevelExtractor:
         return out
 
 
+def baseline_grid(center_hz: float, span_hz: float, bandwidth_hz: float,
+                  n_cells: int = 160):
+    """A uniform grid of pseudo-channels for estimating the noise floor.
+
+    THE BASELINE MUST NOT BE COMPUTED FROM THE CHANNELS BEING RECORDED when
+    those channels were chosen for being likely to carry traffic.
+
+    The pooled baseline assumes fewer than `baseline_percentile`% of the
+    channels it pools over are occupied at once. A uniform grid across a
+    band satisfies that comfortably -- most grid cells have no licensee. A
+    TARGETED list inverts it: every channel in it is there because an FCC
+    record says a transmitter exists on it, so the occupied fraction can
+    easily exceed the percentile, the baseline rides up into the signals,
+    and occupancy is biased DOWN with nothing to show for it.
+
+    So the noise floor is measured from this grid -- cells spread evenly
+    across the whole usable passband, most of which is empty whatever the
+    target list looks like -- while only the targeted channels are
+    recorded. The cells use the same width as the real channels, because
+    the max-bin bias the baseline has to cancel depends on bins per channel.
+
+    Returns objects with the freq_hz/bandwidth_hz attributes
+    ChannelLevelExtractor needs.
+    """
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Cell:
+        freq_hz: float
+        bandwidth_hz: float
+        service: str = ""
+        label: str = ""
+
+    n = max(8, int(n_cells))
+    lo = center_hz - 0.5 * span_hz + 0.5 * bandwidth_hz
+    hi = center_hz + 0.5 * span_hz - 0.5 * bandwidth_hz
+    if hi <= lo:
+        return [_Cell(center_hz, bandwidth_hz)]
+    step = (hi - lo) / (n - 1)
+    return [_Cell(lo + i * step, bandwidth_hz) for i in range(n)]
+
+
 # --------------------------------------------------------------------------- #
 # Rolling pooled baseline
 # --------------------------------------------------------------------------- #

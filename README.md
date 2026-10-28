@@ -123,14 +123,47 @@ different gains, antennas and noise floors pool onto a common axis. See
 averages, and why quoting the wrong one makes every measured duty cycle look
 an order of magnitude below the standard it replaces.
 
-## Hardware
+## Hardware, and why the front end decides the result
+
+This is a **large-signal** problem before it is a sensitivity problem. The
+strongest carrier in the passband sets the gain; everything weaker must
+clear the noise floor at that gain. Near a city the spread between
+broadcast FM and land mobile is 70–90 dB, which is more instantaneous
+dynamic range than a cheap receiver has.
+
+| receiver | ADC | usable range | for this survey |
+|---|---|---|---|
+| **SDRplay RSPdx** | 14-bit | ~75–85 dB | **preferred** — tracking preselect + switchable FM/DAB notches |
+| RSPduo | 14-bit | ~75–85 dB | two tuners: a control band and a target band at once |
+| Airspy R2 / Mini | 12-bit | ~70–80 dB | good front end, no built-in notches |
+| USRP B2xx | 12–14-bit | ~70–85 dB | no preselection; needs external filters |
+| RTL-SDR | 8-bit | ~45–50 dB | **needs an external bandpass** to be usable here at all |
+
+Those figures are *bounded/inferred* from bit depth and published specs,
+not measured — and the binding constraint is usually the tuner's IP3 rather
+than the ADC. `--intermod-check` is what settles it for a given site.
+
+> **The error that flatters you.** Intermod products land on empty channels
+> *exactly when the strong carriers key up*, so they correlate with the
+> predicted-strong emitters and make the validation plot look **better**
+> while being wrong. Unlike a thermal false alarm, it does not average out.
+> [docs/front-end.md](docs/front-end.md) covers the three filter stages,
+> the per-band notch plan, and the gain-setting procedure.
+
+```bash
+python -m occupancy_survey --config config.yaml --intermod-check
+```
+
+Changes gain by 6 dB and reports each channel's implied nonlinearity order
+— 1 for a real signal, 3 for a third-order product. Fix with a filter
+before reaching for gain: a bandpass costs no sensitivity, less gain does.
 
 | backend | needs | notes |
 |---|---|---|
-| `synthetic` | nothing | verify an install, exercise the pipeline |
-| `rtl_sdr` | the `rtl_sdr` binary + numpy | the volunteer path |
-| `gnuradio` | radioconda + gr-sdrplay3 | RSPdx; 12-bit, the better receiver |
+| `gnuradio` | radioconda + gr-sdrplay3 | RSPdx and other high-performance SDRs; actuates the notch filters |
+| `rtl_sdr` | the `rtl_sdr` binary + numpy | reach over sensitivity; external filter effectively required |
 | `rtl_power` | the `rtl_power` binary | fallback; **averages before thresholding** |
+| `synthetic` | nothing | verify an install, exercise the pipeline |
 
 On this Mac the RSPdx path needs two repairs first, both diagnosed and
 neither needing `sudo` — see

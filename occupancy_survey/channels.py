@@ -129,6 +129,57 @@ TARGET = "target"
 CONTROL = "control"
 
 
+# --------------------------------------------------------------------------- #
+# Front-end filtering
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class FrontEnd:
+    """Filter state a band needs at the receiver's front end.
+
+    FILTERS ARE PART OF THE MEASUREMENT, not an accessory, and they are
+    per-band rather than per-session.
+
+    A wideband front end near a city sees megawatt broadcast transmitters
+    alongside the watt-level land mobile this survey is about. Two things
+    then go wrong, and neither announces itself:
+
+      COMPRESSION raises the noise floor across the whole passband. Every
+      threshold here is noise-floor-relative, so occupancy reads LOW.
+
+      INTERMODULATION puts third-order products on channels where nothing
+      is transmitting. This is the worse of the two, because the phantoms
+      appear exactly when the real transmitters key up -- so they correlate
+      with the strong predicted emitters and make the validation plot look
+      BETTER while being wrong. A thermal false alarm is random; an intermod
+      false alarm is structured like real traffic.
+
+    THE INTERACTION THAT BITES: the broadcast-FM notch must be ON while
+    surveying land mobile and OFF while surveying the FM control band.
+    Leave it on for the control and the control reads ~0%, the run is
+    declared untrustworthy, and the fault is in the filter plan rather than
+    anywhere the message points. That is why this is attached to the band.
+
+    `external` names what the operator should fit ahead of the receiver.
+    It is recorded, never actuated -- the tool cannot know what is in the
+    coax, and a dataset that assumed a filter that was not fitted would be
+    worse than one that admits it does not know.
+    """
+    rf_notch: bool = False          # broadcast FM / MW notch
+    dab_notch: bool = False         # Band III DAB notch (174-240 MHz)
+    external: str = ""              # what to fit ahead of the receiver
+    reason: str = ""
+
+    def as_metadata(self) -> dict:
+        return {"rf_notch": self.rf_notch, "dab_notch": self.dab_notch,
+                "external_filter_recommended": self.external,
+                "reason": self.reason,
+                "note": "rf_notch/dab_notch are actuated on receivers that "
+                        "support them and recorded either way; the external "
+                        "filter is RECORDED ONLY -- the tool cannot see what "
+                        "is in the coax."}
+
+
 @dataclass(frozen=True)
 class Channel:
     """One channel to measure occupancy on."""
@@ -170,6 +221,8 @@ class BandPlan:
     role: str = TARGET
     expected_occupancy: float | None = None
     explicit_channels_hz: tuple[float, ...] = field(default_factory=tuple)
+    front_end: FrontEnd = field(default_factory=FrontEnd)
+    targeted: bool = False
     note: str = ""
 
     @property
@@ -221,6 +274,12 @@ BAND_PLANS: dict[str, BandPlan] = {
         freq_min_hz=150_800_000.0, freq_max_hz=156_000_000.0,
         channel_step_hz=12_500.0, channel_bandwidth_hz=11_250.0,
         service="IG", role=TARGET,
+        front_end=FrontEnd(
+            rf_notch=True, dab_notch=True,
+            external="150-174 MHz bandpass ahead of the receiver",
+            reason="broadcast FM is 40-60 dB stronger than the land mobile "
+                   "being measured and its intermod products land in this "
+                   "band"),
         note="VHF business/public-safety pool, lower half. 12.5 kHz grid; "
              "the real plan has 7.5 and 6.25 kHz offsets in places.",
     ),
@@ -229,6 +288,10 @@ BAND_PLANS: dict[str, BandPlan] = {
         freq_min_hz=157_000_000.0, freq_max_hz=161_600_000.0,
         channel_step_hz=12_500.0, channel_bandwidth_hz=11_250.0,
         service="IG", role=TARGET,
+        front_end=FrontEnd(
+            rf_notch=True, dab_notch=True,
+            external="150-174 MHz bandpass ahead of the receiver",
+            reason="as vhf_lmr_low"),
         note="VHF business/public-safety pool, upper half.",
     ),
     "uhf_lmr": BandPlan(
@@ -236,6 +299,11 @@ BAND_PLANS: dict[str, BandPlan] = {
         freq_min_hz=450_000_000.0, freq_max_hz=470_000_000.0,
         channel_step_hz=12_500.0, channel_bandwidth_hz=11_250.0,
         service="IG", role=TARGET,
+        front_end=FrontEnd(
+            rf_notch=True, dab_notch=True,
+            external="450-470 MHz bandpass ahead of the receiver",
+            reason="rejects broadcast FM, DAB and the 2x VHF products that "
+                   "fall in UHF"),
         note="UHF business/public-safety pool. 12.5 kHz grid.",
     ),
     "nwr": BandPlan(
@@ -244,6 +312,11 @@ BAND_PLANS: dict[str, BandPlan] = {
         channel_step_hz=25_000.0, channel_bandwidth_hz=16_000.0,
         service="NWR", role=CONTROL, expected_occupancy=1.0,
         explicit_channels_hz=NWR_CHANNELS_HZ,
+        front_end=FrontEnd(
+            rf_notch=True, dab_notch=True,
+            external="150-174 MHz bandpass (same as the VHF targets)",
+            reason="shares a front end with the VHF targets, so it must "
+                   "share their filtering or it is not a control for them"),
         note="Positive control. A receivable NWR transmitter is a continuous "
              "carrier; at least one of these seven should read ~100%. If none "
              "does, either no NWR station is receivable here (check the "
@@ -254,6 +327,13 @@ BAND_PLANS: dict[str, BandPlan] = {
         freq_min_hz=88_100_000.0, freq_max_hz=107_900_000.0,
         channel_step_hz=200_000.0, channel_bandwidth_hz=180_000.0,
         service="FM", role=CONTROL, expected_occupancy=1.0,
+        front_end=FrontEnd(
+            rf_notch=False, dab_notch=False,
+            external="none, or a 88-108 MHz bandpass",
+            reason="THE FM NOTCH MUST BE OFF HERE. It is on for every other "
+                   "band in the schedule; leaving it on for this one makes "
+                   "the control read ~0%, which declares the whole run "
+                   "untrustworthy for a fault that is in the filter plan"),
         note="Positive control. Each local FM station is a continuous "
              "carrier, so the strong ones should read ~100%. Also the "
              "widest-dynamic-range band in the schedule, which makes it the "

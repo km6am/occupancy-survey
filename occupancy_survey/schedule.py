@@ -113,6 +113,44 @@ class TuneStep:
         return self.center_hz + 0.5 * self.span_hz
 
 
+def cover_channels(channels, usable_hz: float) -> list[tuple[float, float]]:
+    """Minimal set of tuning windows covering a sparse channel set.
+
+    A targeted channel list is not a contiguous band: it may hold forty
+    frequencies scattered across 150-470 MHz. Covering that span uniformly
+    would spend nearly all the airtime on empty spectrum, which is the whole
+    thing targeting is meant to avoid.
+
+    Greedy interval covering, which is optimal for fixed-width windows:
+    take the lowest uncovered channel, place a window whose low edge is that
+    channel's low edge, absorb everything that fits, repeat.
+
+    Returns (center_hz, lo_hz) pairs.
+    """
+    items = sorted(((c.freq_hz - 0.5 * c.bandwidth_hz,
+                     c.freq_hz + 0.5 * c.bandwidth_hz) for c in channels))
+    if not items:
+        return []
+    if usable_hz <= 0:
+        raise ValueError("usable bandwidth is zero")
+
+    windows: list[tuple[float, float]] = []
+    i = 0
+    while i < len(items):
+        lo = items[i][0]
+        hi = lo + usable_hz
+        if items[i][1] > hi:
+            raise ValueError(
+                f"channel at {0.5*(items[i][0]+items[i][1])/1e6:.4f} MHz is "
+                f"{(items[i][1]-items[i][0])/1e3:.1f} kHz wide, which does "
+                f"not fit in {usable_hz/1e6:.3f} MHz of usable bandwidth"
+            )
+        while i < len(items) and items[i][1] <= hi:
+            i += 1
+        windows.append((lo + 0.5 * usable_hz, lo))
+    return windows
+
+
 def tune_steps(band, design: SamplingDesign) -> list[TuneStep]:
     """Decompose a band into receiver tunings.
 
@@ -124,6 +162,16 @@ def tune_steps(band, design: SamplingDesign) -> list[TuneStep]:
     if usable <= 0:
         raise ValueError("usable bandwidth is zero")
 
+    # A targeted band's channels are sparse, so cover them rather than
+    # sweeping the span they happen to straddle.
+    if getattr(band, "targeted", False):
+        return _finalise_of([
+            TuneStep(band_name=band.name, center_hz=center,
+                     span_hz=design.usable_bandwidth_hz, index=i, of=0)
+            for i, (center, _lo) in enumerate(
+                cover_channels(band.channels(), usable))
+        ])
+
     n = max(1, math.ceil(band.span_hz / usable))
     step_usable = band.span_hz / n
     steps = []
@@ -134,6 +182,12 @@ def tune_steps(band, design: SamplingDesign) -> list[TuneStep]:
                               span_hz=design.usable_bandwidth_hz,
                               index=i, of=n))
     return steps
+
+
+def _finalise_of(steps: list[TuneStep]) -> list[TuneStep]:
+    n = len(steps)
+    return [TuneStep(s.band_name, s.center_hz, s.span_hz, s.index, n)
+            for s in steps]
 
 
 def cycle_time_s(bands, design: SamplingDesign,

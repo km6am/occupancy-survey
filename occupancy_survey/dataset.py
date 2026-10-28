@@ -114,7 +114,8 @@ class IntervalDataset:
     bands: dict = field(default_factory=dict)
 
     def add_band(self, band, accumulator, bins_per_channel: int,
-                 channels_observed: int) -> None:
+                 channels_observed: int, front_end: dict | None = None
+                 ) -> None:
         from occupancy_survey.detector import (false_alarm_rate,
                                                occupancy_floor_warning)
         thr = self.metadata.detection.get("threshold_db")
@@ -144,6 +145,11 @@ class IntervalDataset:
                 occupancy_floor_warning(thr, bins_per_channel, pct)
                 if thr is not None and bins_per_channel else None),
             "note": band.note,
+            # What was in front of the receiver. Two datasets taken with
+            # different notch states are not comparable at the same
+            # threshold, and nothing else in the file would reveal it.
+            "front_end": front_end if front_end is not None else (
+                band.front_end.as_metadata()),
             "summary": accumulator.stats.summary(),
             "control_check": accumulator.control_check(),
             "channels": accumulator.channel_records(),

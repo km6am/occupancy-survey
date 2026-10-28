@@ -243,6 +243,54 @@ class GnuRadioBackend(Backend):
             f"multi-step band cannot be surveyed with this device."
         )
 
+    def set_filters(self, front_end) -> dict:
+        """Actuate the RSPdx's notch filters for this band."""
+        applied, missing = {}, []
+        for attr, setter in (("rf_notch", "set_rf_notch_filter"),
+                             ("dab_notch", "set_dab_notch_filter")):
+            want = bool(getattr(front_end, attr))
+            fn = getattr(self._source, setter, None)
+            if fn is None:
+                missing.append(attr)
+                continue
+            try:
+                fn(want)
+                applied[attr] = want
+            except Exception as e:                       # pragma: no cover
+                logger.warning("could not set %s: %s", attr, e)
+                missing.append(attr)
+        # A notch change alters the passband shape, so the noise floor
+        # moves; the caller resets the baseline after this for the same
+        # reason it does after a retune.
+        meta = {**front_end.as_metadata(), "actuated": not missing,
+                "applied": applied}
+        if missing:
+            meta["not_actuated"] = missing
+            meta["actuated_note"] = (
+                f"this build of gr-sdrplay3 exposes no setter for "
+                f"{', '.join(missing)}; the plan is recorded, not applied")
+        return meta
+
+    def set_gain_offset_db(self, offset_db: float) -> bool:
+        """Shift IF gain reduction for the paired-gain intermod check."""
+        cfg = self._config
+        if getattr(cfg, "device_type", "").lower() != "rspdx":
+            fn = getattr(self._source, "set_gain", None)
+            if fn is None:
+                return False
+            try:
+                fn(0, float(cfg.gain) + offset_db)
+                return True
+            except Exception:                            # pragma: no cover
+                return False
+        try:
+            # SDRplay gain is a REDUCTION, so less gain is MORE reduction.
+            self._source.set_gain(
+                -(cfg.if_gain_reduction_db - offset_db), "IF")
+            return True
+        except Exception:                                # pragma: no cover
+            return False
+
     def sweeps(self, dwell_s: float):
         self._start()
         deadline = time.monotonic() + float(dwell_s)

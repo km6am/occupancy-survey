@@ -92,6 +92,7 @@ class AppConfig:
             antenna_height_m=site_raw.get("antenna_height_m"),
             preamp=site_raw.get("preamp", "none"),
             feedline=site_raw.get("feedline", "unspecified"),
+            front_end_filters=site_raw.get("front_end_filters", "none"),
             operator_note=site_raw.get("operator_note", ""),
         )
 
