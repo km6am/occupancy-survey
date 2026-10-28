@@ -66,7 +66,12 @@ class AppConfig:
     bands: tuple = DEFAULT_SCHEDULE
     out_dir: str = "./data"
 
+    # Set by --channels; overrides the grid schedule when present.
+    targeted_bands: list | None = None
+
     def band_plans(self):
+        if self.targeted_bands:
+            return list(self.targeted_bands)
         return resolve_bands(self.bands)
 
     @classmethod

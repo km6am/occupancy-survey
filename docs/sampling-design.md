@@ -46,6 +46,26 @@ on a whip.
 `--plan` prints the figures for **your** configuration. Use those, not
 these.
 
+### Targeting helps less than you would expect
+
+An FCC-derived channel list (`tools/make_channel_list.py`) looks like it
+should collapse the cycle, since it drops 2494 grid channels to 188.
+Measured at CM87 it does not:
+
+| schedule | channels | tune steps | cycle | P(1% channel in 1 h) |
+|---|---|---|---|---|
+| grid, 6 MHz | 2494 | 14 | 287 s | 0.62 |
+| **targeted, 6 MHz** | **188** | **10** | **205 s** | **0.74** |
+
+A 30% saving, not the order of magnitude I first assumed. Licensed
+channels are **spread across** their allocations rather than clustered, so
+the tuning windows still cover nearly the same span — the targeted VHF set
+spans 4.99 MHz of a 5.2 MHz band and needs the same two steps.
+
+Targeting is still worth doing, for exact frequencies (no grid-offset
+splitting) and far smaller files. But **if you need airtime, drop a band**
+— removing `uhf_lmr` and `bcast_fm` saves more than targeting does.
+
 ---
 
 ## 2. The shortest burst

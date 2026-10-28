@@ -129,6 +129,12 @@ def main(argv=None) -> int:
     ap.add_argument("--backend", help="override sdr.backend")
     ap.add_argument("--bands", help="comma-separated band names to override "
                                     "the configured schedule")
+    ap.add_argument("--channels", metavar="JSON",
+                    help="targeted channel list from "
+                         "tools/make_channel_list.py, used instead of the "
+                         "uniform grids. Exact FCC frequencies, far smaller "
+                         "files -- but it cannot find a busy channel with "
+                         "no FCC record, so keep a grid run alongside it.")
     ap.add_argument("--out-dir", help="override output.dir")
     ap.add_argument("--cycles", type=int, help="stop after N full passes")
     ap.add_argument("--duration", type=float, metavar="S",
@@ -171,6 +177,18 @@ def main(argv=None) -> int:
             return 2
     if args.out_dir:
         cfg.out_dir = args.out_dir
+    if args.channels:
+        from occupancy_survey.channels import load_channel_list
+        try:
+            cfg.targeted_bands = load_channel_list(args.channels)
+        except (ValueError, OSError) as e:
+            print(f"channel list error: {e}", file=sys.stderr)
+            return 2
+        logger.warning(
+            "targeted channel list: %d channels. This CANNOT find a busy "
+            "channel with no FCC record -- run a grid schedule alongside it "
+            "if that matters.",
+            sum(len(b.channels()) for b in cfg.targeted_bands))
 
     if args.plan:
         if args.json:

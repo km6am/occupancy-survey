@@ -345,6 +345,60 @@ DEFAULT_SCHEDULE = ("vhf_lmr_low", "nwr", "vhf_lmr_high", "uhf_lmr",
                     "bcast_fm")
 
 
+def load_channel_list(path) -> list[BandPlan]:
+    """Build targeted BandPlans from a tools/make_channel_list.py file.
+
+    A targeted band keeps the role, service and expected occupancy of the
+    grid band it came from -- so the controls stay controls -- but carries
+    explicit FCC frequencies instead of a grid. Two consequences:
+
+      - the grid-offset problem disappears, since FCC frequencies are exact
+        and nothing is split across two channels;
+      - the channels are SPARSE, so schedule.tune_steps() covers them
+        rather than sweeping the span they straddle, which is where the
+        airtime saving comes from.
+
+    It also inherits the band's front-end filter plan, which matters: a
+    targeted VHF band measured without the FM notch is no better off than a
+    grid one.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    data = json.loads(_Path(path).read_text(encoding="utf-8"))
+    if not str(data.get("schema", "")).startswith(
+            "occupancy-survey/channel-list"):
+        raise ValueError(
+            f"{path}: schema '{data.get('schema')}' is not a channel list "
+            f"from tools/make_channel_list.py")
+
+    plans = []
+    for name, entry in sorted(data.get("bands", {}).items()):
+        freqs = tuple(float(c["freq_hz"]) for c in entry["channels"])
+        if not freqs:
+            continue
+        base = BAND_PLANS.get(name)
+        plans.append(BandPlan(
+            name=name,
+            freq_min_hz=min(freqs) - 0.5 * entry["channel_bandwidth_hz"],
+            freq_max_hz=max(freqs) + 0.5 * entry["channel_bandwidth_hz"],
+            channel_step_hz=(base.channel_step_hz if base else 12_500.0),
+            channel_bandwidth_hz=float(entry["channel_bandwidth_hz"]),
+            service=entry.get("service", "IG"),
+            role=entry.get("role", TARGET),
+            expected_occupancy=entry.get("expected_occupancy"),
+            explicit_channels_hz=freqs,
+            front_end=(base.front_end if base else FrontEnd()),
+            targeted=True,
+            note=f"targeted: {len(freqs)} FCC-derived channels from "
+                 f"{path}. A targeted list CANNOT find a busy channel with "
+                 f"no FCC record; keep a grid band alongside it for that.",
+        ))
+    if not plans:
+        raise ValueError(f"{path}: no bands with channels")
+    return plans
+
+
 def resolve_bands(names) -> list[BandPlan]:
     """Resolve band names to plans, erroring on an unknown name."""
     out = []
