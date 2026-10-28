@@ -105,8 +105,9 @@ detection:
   baseline_window_sweeps: 64
 
 # Targets plus known-continuous controls. The controls calibrate the
-# threshold: if NOAA Weather Radio does not read ~100%, the threshold or the
-# receive path is wrong and the target numbers inherit the fault.
+# threshold: if a strong broadcast-FM station does not read ~100%, the
+# threshold or the receive path is wrong and the target numbers inherit the
+# fault. NWR is NOT a reference -- see docs/nwr-measurement.md.
 bands:
   - vhf_lmr_low
   - nwr

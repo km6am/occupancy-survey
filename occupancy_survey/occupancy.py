@@ -81,7 +81,8 @@ class ChannelAccumulator:
     """Excess-dB histogram and run lengths for one channel, one interval."""
 
     __slots__ = ("hist", "underflow", "overflow", "n_decided", "n_present",
-                 "_run", "runs", "_spec", "_threshold_db")
+                 "_run", "runs", "_gap", "gaps", "_cycles", "_spec",
+                 "_threshold_db")
 
     def __init__(self, spec: HistogramSpec, threshold_db: float):
         self._spec = spec
@@ -93,14 +94,27 @@ class ChannelAccumulator:
         self.n_present = 0
         self._run = 0
         self.runs: list[int] = []
+        # Carrier-OFF durations. Tracked because a duty cycle and its
+        # period are different questions and only the second distinguishes
+        # "quiet-but-spiky" from "loud-but-steady" -- which for a SOTA
+        # activation is the distinction that decides whether four contacts
+        # in twenty minutes succeeds. A 3-minute gap is experienced as the
+        # band going quiet and loud again; three hundred 0.6 s gaps with
+        # the same duty cycle are experienced as a steady impairment.
+        self._gap = 0
+        self.gaps: list[int] = []
+        # (on, off) pairs, for estimating the keying period.
+        self._cycles: list[tuple[int, int]] = []
 
     def add(self, excess_db: float, present: bool, decided: bool) -> None:
         if not decided:
-            # A gap in observation ends any run in progress, but the run is
-            # recorded as a *lower bound* only in the sense that it may have
-            # continued unseen. That ambiguity is why run lengths are
-            # reported with the dwell length beside them.
-            self._close_run()
+            # An observation break ends both a run and a gap in progress.
+            # Neither is recorded, because a run or gap interrupted by the
+            # receiver tuning elsewhere is a lower bound on the real one and
+            # pooling bounds with complete observations would bias both
+            # distributions short. This is why a keying-period measurement
+            # needs a CONTINUOUS dwell, not the normal schedule.
+            self._discard_partial()
             return
 
         self.n_decided += 1
@@ -114,17 +128,47 @@ class ChannelAccumulator:
 
         if present:
             self.n_present += 1
+            if self._gap:
+                self.gaps.append(self._gap)
+                # A completed on/off pair: one keying cycle.
+                if self.runs:
+                    self._cycles.append((self.runs[-1], self._gap))
+                self._gap = 0
             self._run += 1
         else:
             self._close_run()
+            self._gap += 1
 
     def _close_run(self) -> None:
         if self._run:
             self.runs.append(self._run)
             self._run = 0
 
+    def _discard_partial(self) -> None:
+        """Drop an in-progress run or gap at an observation break."""
+        self._run = 0
+        self._gap = 0
+
+    def export_partial(self) -> tuple[int, int]:
+        """The in-progress (run, gap) counters.
+
+        Used to carry a transmission across an INTERVAL boundary. An
+        interval boundary is a bookkeeping event, not an observation break:
+        the receiver kept listening, so a run that straddles one is a
+        complete run and must not be discarded like a retune-interrupted
+        one. It is recorded in the interval where it completes.
+        """
+        return self._run, self._gap
+
+    def adopt_partial(self, run: int, gap: int) -> None:
+        self._run = int(run)
+        self._gap = int(gap)
+
     def finalise(self) -> None:
-        self._close_run()
+        # The trailing run or gap is also incomplete -- the interval ended,
+        # not the transmission -- so it is dropped for the same reason.
+        self._run = 0
+        self._gap = 0
 
     def occupancy_at(self, threshold_db: float) -> float | None:
         """Fraction of decided samples at or above `threshold_db`.
@@ -146,6 +190,7 @@ class ChannelAccumulator:
     def to_record(self) -> dict:
         self.finalise()
         runs = np.asarray(self.runs, dtype=np.int64)
+        gaps = np.asarray(self.gaps, dtype=np.int64)
         return {
             "n_decided": int(self.n_decided),
             "n_present": int(self.n_present),
@@ -157,8 +202,53 @@ class ChannelAccumulator:
                 "n": int(runs.size),
                 "max_sweeps": int(runs.max()) if runs.size else 0,
                 "mean_sweeps": float(runs.mean()) if runs.size else 0.0,
+                "median_sweeps": (float(np.median(runs))
+                                  if runs.size else 0.0),
                 "at_threshold_db": self._threshold_db,
             },
+            "gaps": {
+                "n": int(gaps.size),
+                "max_sweeps": int(gaps.max()) if gaps.size else 0,
+                "mean_sweeps": float(gaps.mean()) if gaps.size else 0.0,
+                "median_sweeps": (float(np.median(gaps))
+                                  if gaps.size else 0.0),
+                "note": "carrier-OFF durations between complete runs. Only "
+                        "gaps bounded by observation on both sides are "
+                        "counted; a gap interrupted by a retune is dropped "
+                        "rather than recorded as a short one.",
+            },
+            "keying": self._keying_summary(),
+        }
+
+    def _keying_summary(self) -> dict:
+        """Period and regularity of on/off keying, where there is any.
+
+        A carrier that is simply always on produces no cycles and reports
+        nothing, which is the right answer rather than a period of zero.
+
+        `regularity` is the interquartile spread of the cycle length over
+        its median. A squarish, clock-driven cycle sits near 0; traffic
+        keyed by people does not. It is a description, not a test.
+        """
+        if not self._cycles:
+            return {"cycles_observed": 0, "period_sweeps": None,
+                    "note": "no complete on/off cycle was observed; either "
+                            "the carrier never stopped, never started, or "
+                            "the dwell was too short to bracket one"}
+        on = np.array([c[0] for c in self._cycles], dtype=np.float64)
+        off = np.array([c[1] for c in self._cycles], dtype=np.float64)
+        period = on + off
+        med = float(np.median(period))
+        iqr = float(np.percentile(period, 75) - np.percentile(period, 25))
+        return {
+            "cycles_observed": int(period.size),
+            "period_sweeps": med,
+            "period_iqr_sweeps": iqr,
+            "regularity": (iqr / med) if med > 0 else None,
+            "on_sweeps_median": float(np.median(on)),
+            "off_sweeps_median": float(np.median(off)),
+            "duty_from_cycles": (float(np.sum(on) / np.sum(period))
+                                 if np.sum(period) > 0 else None),
         }
 
 
@@ -243,6 +333,13 @@ class BandAccumulator:
                                        strict=True):
             acc.add(float(exc) if np.isfinite(exc) else 0.0,
                     bool(pres), bool(dec) and decision.baseline_db is not None)
+
+    def export_partials(self) -> list[tuple[int, int]]:
+        return [a.export_partial() for a in self._chan]
+
+    def adopt_partials(self, partials) -> None:
+        for acc, (run, gap) in zip(self._chan, partials, strict=True):
+            acc.adopt_partial(run, gap)
 
     def channel_records(self, min_decided: int = 1) -> list[dict]:
         """Per-channel records, skipping channels never observed.

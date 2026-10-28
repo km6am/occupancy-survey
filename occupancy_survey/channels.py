@@ -94,8 +94,27 @@ SERVICE_CONTINUITY: dict[str, ServiceContinuity] = {
                             "architectural"),
     "AM": ServiceContinuity("AM", "Broadcast AM", CONTINUOUS, 1.0,
                             "architectural"),
-    "NWR": ServiceContinuity("NWR", "NOAA Weather Radio", CONTINUOUS, 1.0,
-                             "architectural -- continuous automated broadcast"),
+    # RETRACTED 2026-10-28, and worth reading before anyone restores it.
+    # This was CONTINUOUS / 1.0 on the reasoning that NWR is a continuous
+    # automated broadcast. An operator reported from listening experience
+    # that transmissions are finite with dead time between them, which is
+    # an observation against an inference, so the inference loses.
+    #
+    # Re-checking the sources afterwards, the inference was weaker than it
+    # looked: NWS documents a 24/7 service and a 3-6 minute programme
+    # cycle, but nothing addresses TRANSMITTER KEYING. "The service runs
+    # 24/7" is a claim about availability, not about carrier continuity.
+    #
+    # The distinction this tool can settle and a listener cannot:
+    #   dead AUDIO, carrier up   -> interference duty is still 100%, since
+    #                               a carrier desenses a front end whether
+    #                               or not it is modulated
+    #   dead CARRIER             -> genuinely below 100%
+    # Both are silence from a speaker. See docs/nwr-measurement.md.
+    "NWR": ServiceContinuity("NWR", "NOAA Weather Radio", UNKNOWN, None,
+                             "UNCERTAIN -- retracted from 'continuous'; "
+                             "carrier keying is not documented and this "
+                             "survey is intended to settle it"),
     "PG": ServiceContinuity("PG", "Paging", INTERMITTENT, None,
                             "OET 65 -- high but not 100%"),
     "AR": ServiceContinuity("AR", "Amateur repeater", INTERMITTENT, None,
@@ -200,17 +219,36 @@ class BandPlan:
     `role` is the measurement's own control structure:
 
       TARGET  -- a band whose occupancy is the thing being measured.
-      CONTROL -- a band whose occupancy is already known from architecture
-                 (NOAA Weather Radio and broadcast FM are continuous
-                 carriers). A control band is the calibration for the
-                 detection threshold: if a control channel that must be
-                 ~100% occupied does not read ~100%, the threshold or the
-                 receive path is wrong, and the target numbers from the same
-                 run are not trustworthy either.
+      CONTROL -- a band whose carrier continuity follows from how the
+                 transmission itself works. A control is the calibration
+                 for the detection threshold: a control channel that must
+                 read ~100% and does not means the threshold or the receive
+                 path is wrong, and the target numbers from the same run
+                 inherit the fault.
 
-    `expected_occupancy` is only set for controls, and only where the
-    architecture fixes it. It is an assumption being used as a check, not a
-    measurement.
+    ONLY BROADCAST FM IS A CONTROL, and the reason the list is short is
+    worth keeping. NOAA Weather Radio was one until 2026-10-28, on the
+    reasoning that a 24/7 automated service implies a continuous carrier.
+    It does not: "the service runs 24/7" is a claim about availability, and
+    carrier keying is a separate question that no source addressed. An
+    operator's listening experience contradicted it and the row was
+    retracted.
+
+    Broadcast FM survives the same scrutiny where NWR did not, because the
+    claim is about the modulation scheme rather than about a schedule: an
+    FM transmitter radiates an unmodulated carrier during programme
+    silence, so carrier presence follows from being on the air rather than
+    from any assumption about content. That is still *architectural* and
+    not measured -- and this survey measures it, so a control that reads
+    well below 100% is also evidence about the control.
+
+    THE GENERAL LESSON, since it cost a working calibration: an assumption
+    used as a calibration is the most dangerous kind, because everything
+    measured against it inherits its error silently. Prefer a control whose
+    basis is a mechanism to one whose basis is a schedule.
+
+    `expected_occupancy` is only set for controls. It is an assumption
+    being used as a check, not a measurement.
     """
     name: str
     freq_min_hz: float
@@ -310,17 +348,22 @@ BAND_PLANS: dict[str, BandPlan] = {
         name="nwr",
         freq_min_hz=162_400_000.0, freq_max_hz=162_550_000.0,
         channel_step_hz=25_000.0, channel_bandwidth_hz=16_000.0,
-        service="NWR", role=CONTROL, expected_occupancy=1.0,
+        service="NWR", role=TARGET, expected_occupancy=None,
         explicit_channels_hz=NWR_CHANNELS_HZ,
         front_end=FrontEnd(
             rf_notch=True, dab_notch=True,
             external="150-174 MHz bandpass (same as the VHF targets)",
-            reason="shares a front end with the VHF targets, so it must "
-                   "share their filtering or it is not a control for them"),
-        note="Positive control. A receivable NWR transmitter is a continuous "
-             "carrier; at least one of these seven should read ~100%. If none "
-             "does, either no NWR station is receivable here (check the "
-             "prediction) or the detector is broken.",
+            reason="shares a front end with the VHF targets, so its noise "
+                   "floor is comparable with theirs"),
+        note="MEASUREMENT TARGET, not a control -- demoted 2026-10-28. It "
+             "was the detection-threshold reference on the assumption of a "
+             "continuous carrier; that assumption is retracted and nothing "
+             "establishes NWR transmitter keying either way. Do NOT anchor "
+             "a threshold to it. It is instead a good FIRST target: one "
+             "known frequency, strong from most QTHs, and the closest "
+             "continuous-SERVICE allocation to 2 m in the catalogue "
+             "(~14 MHz out), which the sota-rf risk model leans on. See "
+             "docs/nwr-measurement.md.",
     ),
     "bcast_fm": BandPlan(
         name="bcast_fm",
@@ -334,10 +377,15 @@ BAND_PLANS: dict[str, BandPlan] = {
                    "band in the schedule; leaving it on for this one makes "
                    "the control read ~0%, which declares the whole run "
                    "untrustworthy for a fault that is in the filter plan"),
-        note="Positive control. Each local FM station is a continuous "
-             "carrier, so the strong ones should read ~100%. Also the "
-             "widest-dynamic-range band in the schedule, which makes it the "
-             "place a fixed gain setting will clip first.",
+        note="The schedule's only positive control. An FM transmitter "
+             "radiates an unmodulated carrier through programme silence, so "
+             "carrier presence follows from the modulation scheme rather "
+             "than from a schedule -- which is why this survived the "
+             "scrutiny that retired the NWR control. Still architectural, "
+             "not measured: a strong local station reading well below 100% "
+             "is evidence about this assumption too, not only about the "
+             "receiver. Also the widest-dynamic-range band in the schedule, "
+             "so it is where a fixed gain setting will clip first.",
     ),
 }
 

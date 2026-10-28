@@ -29,8 +29,9 @@ matters here:
   - A purely *temporal* baseline -- a low percentile of the channel's own
     history -- reads 0% occupancy on a channel that is occupied 100% of the
     time, because the carrier *becomes* the channel's own 25th percentile.
-    That is a catastrophic failure on precisely the NOAA Weather Radio
-    control band, whose whole job is to read ~100%.
+    That is a catastrophic failure on precisely the broadcast-FM control
+    band, whose whole job is to read ~100% -- and on any permanently-keyed
+    channel, which is the class of thing this survey most wants to find.
 
 Pooling over both axes avoids both. Its own load-bearing assumption, stated
 so it can be pushed back on:

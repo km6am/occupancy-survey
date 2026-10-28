@@ -104,9 +104,26 @@ Occupancy **by continuity class** is the discriminating comparison:
 intermittent at 10–25%. Those predict different distributions, so the
 measurement can tell them apart — and can fail.
 
-The control bands do double duty: they calibrate the detection threshold,
+The control band does double duty: it calibrates the detection threshold,
 and the weakest control channel actually heard sets an **empirical
 audibility floor** that makes "predicted but never active" mean something.
+
+> **Only broadcast FM is a control**, and the list is short on purpose.
+> NOAA Weather Radio was one until 2026-10-28, on the reasoning that a 24/7
+> automated service implies a continuous carrier. It does not — *"the
+> service runs 24/7"* is a claim about **availability**, and transmitter
+> **keying** is a separate question no source addressed. An operator's
+> listening experience contradicted it, so the row was retracted and NWR
+> is now a measurement target. FM survives the same scrutiny because the
+> claim is about the modulation scheme rather than a schedule: an FM
+> transmitter radiates an unmodulated carrier through programme silence.
+>
+> The lesson, since it cost a working calibration: **an assumption used as
+> a calibration is the most dangerous kind**, because everything measured
+> against it inherits its error silently. Prefer a control whose basis is a
+> *mechanism* over one whose basis is a *schedule*.
+> [docs/nwr-measurement.md](docs/nwr-measurement.md) covers the
+> measurement that would settle it.
 Without it that list is thousands of distant low-power licences — a real
 smoke test returned 11,980 predicted channels for one location.
 

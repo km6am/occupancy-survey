@@ -6,7 +6,7 @@ import unittest
 from occupancy_survey.backends.base import Backend
 from occupancy_survey.backends.synthetic import SyntheticBackend
 from occupancy_survey.channels import (BAND_PLANS, CONTROL, DEFAULT_SCHEDULE,
-                                       FrontEnd, resolve_bands)
+                                       TARGET, FrontEnd, resolve_bands)
 from occupancy_survey.dataset import read_dataset
 from occupancy_survey.schedule import SamplingDesign
 from occupancy_survey.site import SiteMetadata
@@ -36,13 +36,46 @@ class TestFilterPlan(unittest.TestCase):
                     f"{name} is measured alongside broadcast FM and needs "
                     f"the notch on")
 
-    def test_the_nwr_control_shares_the_vhf_targets_filtering(self):
-        """A control filtered differently from its targets is not a control."""
+    def test_nwr_shares_the_vhf_targets_filtering(self):
+        """NWR sits in the VHF passband, so it must share its filtering.
+
+        It is a TARGET, not a control (see test_nwr_is_not_a_control), but
+        it is still measured through the same front end as the VHF targets
+        and its noise floor must be comparable with theirs.
+        """
         nwr = BAND_PLANS["nwr"]
         vhf = BAND_PLANS["vhf_lmr_low"]
-        self.assertEqual(nwr.role, CONTROL)
         self.assertEqual(nwr.front_end.rf_notch, vhf.front_end.rf_notch)
         self.assertEqual(nwr.front_end.dab_notch, vhf.front_end.dab_notch)
+
+    def test_nwr_is_not_a_control(self):
+        """Regression guard on a retracted assumption.
+
+        NWR was the detection-threshold calibration until 2026-10-28, on
+        the reasoning that a 24/7 automated service implies a continuous
+        carrier. That conflates service availability with transmitter
+        keying, and an operator's listening experience contradicted it.
+
+        If it is ever restored as a control, that must follow a
+        MEASUREMENT of its carrier keying -- which is what
+        docs/nwr-measurement.md exists to obtain -- not a re-reading of the
+        same sources.
+        """
+        nwr = BAND_PLANS["nwr"]
+        self.assertEqual(nwr.role, TARGET)
+        self.assertIsNone(nwr.expected_occupancy,
+                          "an expected occupancy here would re-anchor the "
+                          "threshold to the retracted assumption")
+        self.assertIn("not a control", nwr.note)
+
+        from occupancy_survey.channels import UNKNOWN, continuity_for
+        self.assertEqual(continuity_for("NWR").continuity, UNKNOWN)
+        self.assertIsNone(continuity_for("NWR").expected_duty)
+
+    def test_broadcast_fm_is_the_only_control(self):
+        controls = [n for n in DEFAULT_SCHEDULE
+                    if BAND_PLANS[n].role == CONTROL]
+        self.assertEqual(controls, ["bcast_fm"])
 
     def test_every_band_names_an_external_filter_and_a_reason(self):
         for name in DEFAULT_SCHEDULE:

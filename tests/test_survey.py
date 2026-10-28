@@ -54,9 +54,15 @@ class TestEndToEndRecovery(unittest.TestCase):
 
     def _run(self, emitters, bands, cycles=40, **design_kw):
         design = _design(**design_kw)
+        # The backend's sample rate and the design's usable bandwidth must
+        # agree or Survey refuses to run -- which is the point of that
+        # check, so the helper keeps them consistent rather than
+        # sidestepping it.
         with tempfile.TemporaryDirectory() as d:
             paths = Survey(resolve_bands(bands),
-                           SyntheticBackend(emitters, integration_s=0.01),
+                           SyntheticBackend(
+                               emitters, integration_s=0.01,
+                               sample_rate_hz=design.usable_bandwidth_hz),
                            SiteMetadata(**SITE), design, out_dir=d,
                            seed=5).run(cycles=cycles)
             return [read_dataset(p) for p in paths]
@@ -81,17 +87,31 @@ class TestEndToEndRecovery(unittest.TestCase):
         self.assertEqual(out["targets"]["vhf_lmr_low"]["channels_active"], 2)
 
     def test_a_control_band_passes_when_its_carrier_is_present(self):
-        em = [SyntheticEmitter(162_475_000.0, 30.0, duty=1.0,
-                               bandwidth_hz=14_000.0)]
-        dss = self._run(em, ["nwr"], cycles=10)
-        check = dss[0]["bands"]["nwr"]["control_check"]
+        em = [SyntheticEmitter(88_500_000.0, 30.0, duty=1.0,
+                               bandwidth_hz=170_000.0)]
+        dss = self._run(em, ["bcast_fm"], cycles=3,
+                        usable_bandwidth_hz=20e6, dwell_s=0.5)
+        check = dss[0]["bands"]["bcast_fm"]["control_check"]
         self.assertEqual(check["verdict"], "pass")
 
     def test_a_control_band_fails_when_nothing_is_receivable(self):
         """The calibration working: no carrier, failed control."""
-        dss = self._run([], ["nwr"], cycles=10)
-        self.assertEqual(dss[0]["bands"]["nwr"]["control_check"]["verdict"],
-                         "fail")
+        dss = self._run([], ["bcast_fm"], cycles=3,
+                        usable_bandwidth_hz=20e6, dwell_s=0.5)
+        self.assertEqual(
+            dss[0]["bands"]["bcast_fm"]["control_check"]["verdict"], "fail")
+
+    def test_nwr_produces_no_control_check_at_all(self):
+        """NWR is a target: it must not gate a run's trustworthiness.
+
+        Retracted 2026-10-28. It was the detection-threshold reference on
+        the assumption of a continuous carrier, which is not established --
+        an operator reported finite transmissions with dead time between
+        them. Had it stayed a control, a correct run over a genuinely
+        intermittent NWR carrier would have been declared untrustworthy.
+        """
+        dss = self._run([], ["nwr"], cycles=6)
+        self.assertIsNone(dss[0]["bands"]["nwr"]["control_check"])
 
     def test_channels_are_covered_across_a_multistep_band(self):
         """A band needing several tunings must measure all of it.

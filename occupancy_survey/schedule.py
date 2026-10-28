@@ -365,6 +365,22 @@ class Schedule:
             for band, step in self._steps:
                 yield band, step, self.jittered_dwell_s()
 
+    @property
+    def continuous_dwell(self) -> bool:
+        """One tune step, dwelt on for longer than a logging interval.
+
+        This is a deliberate configuration, not a mistake: it is how a
+        keying PERIOD is measured, since a run longer than one dwell cannot
+        be observed and an interrupted run is discarded rather than
+        recorded short. See docs/nwr-measurement.md.
+
+        Recognising it matters because the band-stepping warnings below all
+        fire on it, and three spurious warnings on a correct configuration
+        teach an operator to ignore warnings.
+        """
+        return (len(self._steps) == 1
+                and self._design.dwell_s >= self._design.interval_s)
+
     def warnings(self, retune_overhead_s: float = 0.5) -> list[str]:
         """Honest complaints about the configuration.
 
@@ -374,6 +390,18 @@ class Schedule:
         """
         out = []
         cycle = cycle_time_s(self._bands, self._design, retune_overhead_s)
+
+        if self.continuous_dwell:
+            return [
+                "continuous-dwell configuration: one band, one tuning, no "
+                "retunes. Carrier runs and gaps are bounded by observation "
+                "on both sides, so a keying PERIOD is measurable -- which "
+                "the normal band-stepping schedule cannot do. The revisit, "
+                "jitter and cycle-time warnings do not apply here and are "
+                "suppressed. Intervals still roll mid-dwell, carrying any "
+                "transmission in progress."
+            ]
+
         if cycle > self._design.revisit_target_s:
             out.append(
                 f"cycle time {cycle:.0f} s exceeds revisit_target_s "

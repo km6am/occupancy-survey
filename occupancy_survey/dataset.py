@@ -150,6 +150,9 @@ class IntervalDataset:
             # threshold, and nothing else in the file would reveal it.
             "front_end": front_end if front_end is not None else (
                 band.front_end.as_metadata()),
+            "integration_s": self.metadata.sampling.get("integration_s"),
+            "timing_note": "runs/gaps/keying are in SWEEPS; multiply by "
+                           "integration_s for seconds",
             "summary": accumulator.stats.summary(),
             "control_check": accumulator.control_check(),
             "channels": accumulator.channel_records(),
@@ -324,8 +327,8 @@ def service_occupancy(datasets, threshold_db: float | None = None,
           picked at random off a grid.
 
     Only target bands are summarised. Control bands are reported separately
-    with their verdicts, because folding a 100%-occupied NOAA carrier into a
-    land-mobile average would be nonsense.
+    with their verdicts, because folding a 100%-occupied broadcast-FM
+    carrier into a land-mobile average would be nonsense.
     """
     out = {"threshold_db": threshold_db, "targets": {}, "controls": {}}
     band_names = set()

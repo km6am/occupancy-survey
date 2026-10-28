@@ -1,0 +1,59 @@
+# NOAA Weather Radio keying measurement. See docs/nwr-measurement.md.
+#
+# This configuration exists because the NORMAL schedule cannot answer the
+# question. A 20 s dwell on a ~287 s cycle cannot measure a carrier-on
+# period of minutes -- the run is cut by the retune and discarded -- and the
+# revisit period overlaps the 180-360 s programme cycle, which is the
+# commensurate-period aliasing docs/sampling-design.md section 5 warns about.
+#
+# So: one band, one tuning, one uninterrupted dwell.
+#
+#   python -m occupancy_survey --config config.nwr.yaml --duration 7200
+
+site:
+  site_id: "CHANGE-ME"
+  receiver_model: "SDRplay RSPdx"
+  antenna: "CHANGE-ME"
+  front_end_filters: "none"
+  grid_square: "CM87"
+
+sdr:
+  backend: "gnuradio"
+  device_type: "rspdx"
+  # 2 MHz is ample for a 150 kHz band and keeps the FFT cheap over a long
+  # run. usable_bandwidth_hz follows this automatically.
+  sample_rate_hz: 2048000
+  fft_size: 4096
+  if_gain_reduction_db: 40
+  rf_gain_reduction_db: 0
+  antenna_port: "Antenna B"
+
+sampling:
+  # 0.1 s resolves a programme cycle of minutes with enormous margin, and
+  # still catches short keying if that is what is happening.
+  integration_s: 0.1
+
+  # LONGER THAN THE RUN, deliberately. With one band and one tune step the
+  # receiver then never retunes, so runs and gaps are bounded by observation
+  # on both sides and the keying period is measurable.
+  dwell_s: 86400.0
+  revisit_target_s: 86400.0
+
+  # No jitter: there is nothing to jitter, since there is only one visit.
+  jitter_fraction: 0.0
+
+  interval_s: 1800.0
+  usable_fraction: 0.8
+
+detection:
+  # NOT anchored to NWR -- that is the whole point. Set from the per-channel
+  # noise floor like any other band, and recorded with the result.
+  threshold_db: 10.0
+  baseline_percentile: 25.0
+  baseline_window_sweeps: 64
+
+bands:
+  - nwr
+
+output:
+  dir: "./data/nwr"

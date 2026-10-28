@@ -106,15 +106,22 @@ much faster.
 Open the newest file in `data/` — they are gzipped JSON, so
 `gunzip -c data/occ_*.json.gz | head -40` will show the top.
 
-Look for the `nwr` band and its `control_check`. It should say
+Look for the `bcast_fm` band and its `control_check`. It should say
 `"verdict": "pass"`.
 
-- **`pass`** — good. NOAA Weather Radio broadcasts continuously, so finding
-  it at ~100% proves the receiver and the settings are working.
-- **`fail`** — the numbers from this run are not trustworthy. Either no
-  weather radio transmitter reaches your antenna (possible in some places),
-  or something is wrong with the dongle, the antenna or the gain. Try moving
-  the antenna near a window first.
+- **`pass`** — good. An FM broadcast transmitter radiates a carrier
+  continuously, even during quiet moments in the programme, so finding a
+  local station at ~100% shows the receiver and the settings are working.
+- **`fail`** — the numbers from this run are not trustworthy. Either no FM
+  station reaches your antenna (unlikely), or something is wrong with the
+  dongle, the antenna or the gain. Try moving the antenna near a window
+  first.
+
+Do **not** use the `nwr` band for this check. NOAA Weather Radio looks like
+it should be a perfect reference — a 24/7 service — but whether its
+transmitter keys on and off between programme cycles is not actually
+established, and this survey is partly intended to find out. If `nwr` reads
+40%, that may well be correct.
 
 ---
 

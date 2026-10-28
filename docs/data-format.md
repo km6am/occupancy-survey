@@ -130,7 +130,8 @@ Quoting the first against the second would make every measured duty cycle
 look an order of magnitude lower than the standard it is replacing.
 
 Control bands are reported separately with their verdicts. Folding a
-100%-occupied NOAA carrier into a land-mobile average would be nonsense.
+100%-occupied broadcast-FM carrier into a land-mobile average would be
+nonsense.
 
 ---
 

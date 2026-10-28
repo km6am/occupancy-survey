@@ -47,9 +47,15 @@ detection:
   baseline_percentile: 25.0
   baseline_window_sweeps: 64
 
-# VHF land mobile plus the two reference bands. NOAA Weather Radio and
-# broadcast FM are included on purpose: their transmitters are on all the
-# time, so they prove the receiver is working. Do not remove them.
+# VHF land mobile, plus two bands included on purpose.
+#
+# bcast_fm is the REFERENCE: an FM transmitter radiates a carrier even
+# during programme silence, so a local station should read ~100% and prove
+# the receiver is working. Do not remove it.
+#
+# nwr is a measurement TARGET, not a reference. It was treated as a
+# continuous carrier until that turned out not to be established; whether it
+# keys on and off is one of the things this survey is trying to find out.
 bands:
   - vhf_lmr_low
   - nwr

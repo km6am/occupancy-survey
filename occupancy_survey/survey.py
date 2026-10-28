@@ -76,6 +76,8 @@ class Survey:
         self._written: list = []
         self._bandwidth_checked = False
         self._applied_front_end: str | None = None
+        self._clock = lambda: datetime.now(timezone.utc)
+        self._deadline: float | None = None
 
         for w in self._schedule.warnings():
             logger.warning("sampling design: %s", w)
@@ -91,13 +93,35 @@ class Survey:
             receiver=dict(self._backend.receiver_metadata()),
         )
 
-    def _begin_interval(self, now: datetime) -> None:
+    def _begin_interval(self, now: datetime, carry=None) -> None:
         self._interval_start = now
         self._state = {
             b.name: _BandState(BandAccumulator(b, b.channels(),
                                                self._histogram, self._policy))
             for b in self._bands
         }
+        # An interval boundary is bookkeeping, not an observation break: the
+        # receiver kept listening across it, so a transmission in progress
+        # is carried into the new interval rather than discarded. Without
+        # this a continuous-dwell keying measurement would lose one cycle
+        # at every interval boundary.
+        #
+        # The per-visit band metadata is carried for a blunter reason: it is
+        # established once when a visit starts, and a roll that happens
+        # mid-visit would otherwise leave the new interval reporting zero
+        # observed channels, so its band would be omitted and the file
+        # never written at all.
+        for name, carried in (carry or {}).items():
+            st = self._state.get(name)
+            if st is None:
+                continue
+            try:
+                st.accumulator.adopt_partials(carried["partials"])
+            except ValueError:
+                pass
+            st.bins_per_channel = carried["bins_per_channel"]
+            st.channels_observed = carried["channels_observed"]
+            st.front_end = carried["front_end"]
         # A new interval gets fresh baselines. The alternative -- carrying
         # them -- would make the first minutes of each interval depend on
         # the last minutes of the previous one, which is harmless until an
@@ -137,10 +161,18 @@ class Survey:
 
         Stops after `cycles` full passes, or after `duration_s`, whichever
         comes first; with neither it runs until interrupted.
+
+        Both the duration limit and the interval boundary are enforced
+        INSIDE a visit, not only between visits. A single-band continuous
+        dwell -- which is how a keying period is measured, see
+        docs/nwr-measurement.md -- has one visit that can last hours, and a
+        check that only ran between visits would ignore --duration entirely
+        and write one enormous file at the end.
         """
-        clock = now_fn or (lambda: datetime.now(timezone.utc))
-        started = time.monotonic()
-        self._begin_interval(clock())
+        self._clock = now_fn or (lambda: datetime.now(timezone.utc))
+        self._deadline = (time.monotonic() + duration_s
+                          if duration_s is not None else None)
+        self._begin_interval(self._clock())
 
         cycle = 0
         try:
@@ -149,24 +181,38 @@ class Survey:
                     break
                 for band, step, dwell in self._schedule.visits(cycles=1):
                     self._visit(band, step, dwell)
-
-                    now = clock()
-                    if self._interval_start is not None and \
-                            (now - self._interval_start) >= timedelta(
-                                seconds=self._design.interval_s):
-                        self._end_interval(now)
-                        self._begin_interval(now)
-
-                    if duration_s is not None and \
-                            time.monotonic() - started >= duration_s:
+                    self._maybe_roll_interval()
+                    if self._past_deadline():
                         raise _Done
                 cycle += 1
         except (_Done, KeyboardInterrupt):
             logger.info("stopping")
         finally:
-            self._end_interval(clock())
+            self._end_interval(self._clock())
 
         return list(self._written)
+
+    def _past_deadline(self) -> bool:
+        return (self._deadline is not None
+                and time.monotonic() >= self._deadline)
+
+    def _maybe_roll_interval(self) -> None:
+        """Close and reopen the interval if it is due, carrying partials."""
+        if self._interval_start is None:
+            return
+        now = self._clock()
+        if (now - self._interval_start) < timedelta(
+                seconds=self._design.interval_s):
+            return
+        carry = {
+            name: {"partials": st.accumulator.export_partials(),
+                   "bins_per_channel": st.bins_per_channel,
+                   "channels_observed": st.channels_observed,
+                   "front_end": st.front_end}
+            for name, st in self._state.items()
+        }
+        self._end_interval(now)
+        self._begin_interval(now, carry=carry)
 
     def _check_bandwidth(self, axis) -> None:
         """Refuse a design that assumes more bandwidth than the receiver has.
@@ -248,9 +294,14 @@ class Survey:
         for sweep in self._backend.sweeps(dwell_s):
             b = baseline.update(grid_extractor.levels_db(sweep.spectrum_db))
             levels = extractor.levels_db(sweep.spectrum_db)
-            st.accumulator.add_sweep(
+            # Re-read the state each sweep: a mid-visit interval roll
+            # replaces the accumulator underneath us.
+            self._state[band.name].accumulator.add_sweep(
                 decide(levels, b, self._policy),
                 clip_fraction=sweep.clip_fraction)
+            self._maybe_roll_interval()
+            if self._past_deadline():
+                break
 
 
     def intermod_check(self, band: BandPlan, step, sweeps: int = 40,

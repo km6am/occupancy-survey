@@ -107,13 +107,17 @@ cd ~/Code/occupancy-survey && python -m occupancy_survey --config config.yaml --
 ```
 
 Then, after the two repairs above, a short RSPdx run on the control band
-only — NOAA Weather Radio, where the right answer is known in advance:
+only — broadcast FM, where the right answer is known in advance:
 
 ```bash
-cd ~/Code/occupancy-survey && python -m occupancy_survey --config config.yaml --backend gnuradio --bands nwr --duration 300
+cd ~/Code/occupancy-survey && python -m occupancy_survey --config config.yaml --backend gnuradio --bands bcast_fm --duration 300
 ```
 
 If that run's `control_check` verdict is not `pass`, stop and find out why
-before collecting any target data: either no NWR transmitter is receivable
-at this QTH, or the gain, the antenna or the threshold is wrong. Every
-target number from a run whose control failed inherits the same fault.
+before collecting any target data: either no FM station is receivable at
+this QTH, or the gain, the antenna or the threshold is wrong. Every target
+number from a run whose control failed inherits the same fault.
+
+(NOAA Weather Radio was the control until 2026-10-28 and is now a
+measurement target — its carrier continuity is not established. See
+[nwr-measurement.md](nwr-measurement.md).)

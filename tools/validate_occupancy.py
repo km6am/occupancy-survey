@@ -19,7 +19,7 @@ panel -- occupancy against predicted field proxy -- is merely CONSISTENT
 with the model being right; a detector that triggered on noise would also
 put the strong emitters at the top. The second panel asks a question whose
 answers differ: duty_cycles.md section 2 claims, from architecture alone,
-that trunked sites (Y-prefix service codes) and broadcast/NWR carriers are
+that trunked sites (Y-prefix service codes) and broadcast carriers are
 CONTINUOUS while conventional land mobile (PW, IG) is intermittent at
 10-25%. Those predict different occupancy distributions, so the measurement
 can distinguish them, and it can fail.
@@ -192,9 +192,9 @@ def empirical_audibility_floor(rows):
     unfiltered list of predicted-but-silent channels is thousands of rows
     long and says nothing.
 
-    The control bands fix that. NOAA Weather Radio and broadcast FM carriers
-    are continuous by architecture, so a control channel that was detected
-    is one this antenna and gain setting can definitely hear. The WEAKEST
+    The control bands fix that. A broadcast-FM transmitter radiates a
+    carrier through programme silence, so a control channel that was
+    detected is one this antenna and gain setting can definitely hear. The WEAKEST
     such channel's predicted proxy is therefore an empirical floor: above
     it, silence is an anomaly worth chasing; below it, silence is expected.
 
@@ -202,11 +202,11 @@ def empirical_audibility_floor(rows):
     was both predicted and measured active -- in which case the caller must
     say the list is unfiltered rather than quietly filtering on a guess.
 
-    The weak link: the controls are continuous BROADCAST and NWR
-    transmitters, usually high up and high power. Extending their floor to
-    land-mobile sites assumes the proxy's errors do not depend on the kind
-    of emitter, and terrain shadowing makes that doubtful. Treat the floor
-    as an order of magnitude, not a threshold.
+    The weak link: the controls are broadcast transmitters, usually high up
+    and high power. Extending their floor to land-mobile sites assumes the
+    proxy's errors do not depend on the kind of emitter, and terrain
+    shadowing makes that doubtful. Treat the floor as an order of
+    magnitude, not a threshold.
     """
     usable = [r for r in rows
               if r.get("matched") and r.get("band_role") == "control"
@@ -411,7 +411,7 @@ def report(rows, busy_unpredicted, controls, conditions, threshold_db):
             "silence is an")
         add("  anomaly; below it, silence is expected. An order of "
             "magnitude, not a")
-        add("  threshold -- the controls are high broadcast/NWR sites and "
+        add("  threshold -- the controls are high broadcast sites and "
             "land mobile")
         add("  is shadowed differently.")
     else:
