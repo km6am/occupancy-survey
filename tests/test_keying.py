@@ -156,3 +156,65 @@ class TestObservationBreaks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRetuneDoesNotFabricateAPeriod(unittest.TestCase):
+    """A period must not be reported when the schedule cannot measure one.
+
+    Caught by dry-running the measurement plan. Two bugs stacked:
+
+    1. The accumulator only marked an observation break when a CHANNEL fell
+       outside the passband, not when the receiver left the BAND. Between
+       visits no sweeps arrive at all, so runs and gaps silently spanned
+       retunes.
+    2. Even with the break marked, the on/off pairing used `runs[-1]` --
+       the last run ever recorded -- so a gap seen after a retune was
+       paired with a run from before it.
+
+    Either one produces a confident "period" that is really the dwell
+    length. Occupancy was unaffected throughout, which is what made it
+    dangerous: the number next to it looked equally trustworthy.
+    """
+
+    def _period(self, dwell_s, bands, cycles):
+        import tempfile
+        from occupancy_survey.backends.synthetic import SyntheticBackend
+        from occupancy_survey.channels import resolve_bands
+        from occupancy_survey.dataset import read_dataset
+        from occupancy_survey.schedule import SamplingDesign
+        from occupancy_survey.site import SiteMetadata
+        from occupancy_survey.survey import Survey
+
+        em = [SyntheticEmitter(151_475_000.0, 26.0, duty=0.2,
+                               period_sweeps=50)]
+        design = SamplingDesign(integration_s=0.01, dwell_s=dwell_s,
+                                interval_s=100000.0, revisit_target_s=100000.0,
+                                jitter_fraction=0.0, usable_bandwidth_hz=6e6)
+        with tempfile.TemporaryDirectory() as d:
+            paths = Survey(resolve_bands(bands),
+                           SyntheticBackend(em, integration_s=0.01,
+                                            sample_rate_hz=6e6),
+                           SiteMetadata("q", "RSPdx", "d"), design,
+                           out_dir=d, seed=7).run(cycles=cycles)
+            data = read_dataset(paths[0])
+        chans = {c["freq_hz"]: c
+                 for c in data["bands"]["vhf_lmr_low"]["channels"]}
+        return chans[151_475_000.0]
+
+    def test_band_stepping_reports_no_period_rather_than_the_dwell(self):
+        rec = self._period(0.4, ["vhf_lmr_low", "nwr"], cycles=12)
+        self.assertAlmostEqual(rec["occupancy"], 0.20, delta=0.03,
+                               msg="occupancy must still be correct -- it is "
+                                   "a ratio over decided samples")
+        self.assertEqual(rec["keying"]["cycles_observed"], 0)
+        self.assertIsNone(rec["keying"]["period_sweeps"],
+                          "a 40-sweep dwell cannot bracket a 50-sweep "
+                          "period; reporting one would be the dwell length "
+                          "wearing the signal's clothes")
+
+    def test_a_continuous_dwell_recovers_the_real_period(self):
+        rec = self._period(20.0, ["vhf_lmr_low"], cycles=1)
+        self.assertAlmostEqual(rec["occupancy"], 0.20, delta=0.03)
+        self.assertGreater(rec["keying"]["cycles_observed"], 20)
+        self.assertAlmostEqual(rec["keying"]["period_sweeps"], 50.0,
+                               delta=2.0)

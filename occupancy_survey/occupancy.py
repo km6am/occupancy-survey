@@ -81,8 +81,8 @@ class ChannelAccumulator:
     """Excess-dB histogram and run lengths for one channel, one interval."""
 
     __slots__ = ("hist", "underflow", "overflow", "n_decided", "n_present",
-                 "_run", "runs", "_gap", "gaps", "_cycles", "_spec",
-                 "_threshold_db")
+                 "_run", "runs", "_gap", "gaps", "_cycles",
+                 "_run_before_gap", "_spec", "_threshold_db")
 
     def __init__(self, spec: HistogramSpec, threshold_db: float):
         self._spec = spec
@@ -103,8 +103,17 @@ class ChannelAccumulator:
         # the same duty cycle are experienced as a steady impairment.
         self._gap = 0
         self.gaps: list[int] = []
-        # (on, off) pairs, for estimating the keying period.
+        # (on, off) pairs, for estimating the keying period. A pair is
+        # only valid when the run, the gap and the return to carrier all
+        # happened inside ONE unbroken observation span -- see
+        # _run_before_gap.
         self._cycles: list[tuple[int, int]] = []
+        # The run that immediately preceded the gap now in progress, or
+        # None if there was no such run since observation last resumed.
+        # Without this, a gap seen after a retune is paired with a run from
+        # BEFORE the retune, and the resulting "period" is an artifact of
+        # the dwell length rather than a property of the signal.
+        self._run_before_gap: int | None = None
 
     def add(self, excess_db: float, present: bool, decided: bool) -> None:
         if not decided:
@@ -129,11 +138,12 @@ class ChannelAccumulator:
         if present:
             self.n_present += 1
             if self._gap:
-                self.gaps.append(self._gap)
-                # A completed on/off pair: one keying cycle.
-                if self.runs:
-                    self._cycles.append((self.runs[-1], self._gap))
+                # Only a gap bracketed by observation on both sides counts.
+                if self._run_before_gap is not None:
+                    self.gaps.append(self._gap)
+                    self._cycles.append((self._run_before_gap, self._gap))
                 self._gap = 0
+                self._run_before_gap = None
             self._run += 1
         else:
             self._close_run()
@@ -142,12 +152,14 @@ class ChannelAccumulator:
     def _close_run(self) -> None:
         if self._run:
             self.runs.append(self._run)
+            self._run_before_gap = self._run
             self._run = 0
 
     def _discard_partial(self) -> None:
         """Drop an in-progress run or gap at an observation break."""
         self._run = 0
         self._gap = 0
+        self._run_before_gap = None
 
     def export_partial(self) -> tuple[int, int]:
         """The in-progress (run, gap) counters.
@@ -169,6 +181,7 @@ class ChannelAccumulator:
         # not the transmission -- so it is dropped for the same reason.
         self._run = 0
         self._gap = 0
+        self._run_before_gap = None
 
     def occupancy_at(self, threshold_db: float) -> float | None:
         """Fraction of decided samples at or above `threshold_db`.
@@ -333,6 +346,25 @@ class BandAccumulator:
                                        strict=True):
             acc.add(float(exc) if np.isfinite(exc) else 0.0,
                     bool(pres), bool(dec) and decision.baseline_db is not None)
+
+    def mark_observation_break(self) -> None:
+        """Declare that observation stopped, e.g. the receiver retuned away.
+
+        MUST be called when a visit ends. Between visits no sweeps are
+        added at all, so without this the accumulator sees an unbroken
+        stream of decided sweeps across a retune, and a run or gap silently
+        spans the time the receiver was on another band. The occupancy is
+        unaffected -- it is a ratio over decided samples -- but the KEYING
+        PERIOD becomes an artifact of the dwell length rather than a
+        property of the signal.
+
+        Distinct from an interval boundary, which is bookkeeping and
+        carries partials forward: here the receiver genuinely stopped
+        listening, so a run in progress is only a lower bound and is
+        dropped.
+        """
+        for acc in self._chan:
+            acc._discard_partial()
 
     def export_partials(self) -> list[tuple[int, int]]:
         return [a.export_partial() for a in self._chan]

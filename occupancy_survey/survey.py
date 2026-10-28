@@ -309,6 +309,10 @@ class Survey:
                 step.center_hz / 1e6)
             return
 
+        # Leaving a band is an observation break. Marked at the START of a
+        # visit as well as the end, so an interrupted run never survives a
+        # retune even if a previous visit ended abnormally.
+        st.accumulator.mark_observation_break()
         for sweep in self._backend.sweeps(dwell_s):
             b = baseline.update(grid_extractor.levels_db(sweep.spectrum_db))
             levels = extractor.levels_db(sweep.spectrum_db)
@@ -320,6 +324,7 @@ class Survey:
             self._maybe_roll_interval()
             if self._past_deadline():
                 break
+        self._state[band.name].accumulator.mark_observation_break()
 
 
     def intermod_check(self, band: BandPlan, step, sweeps: int = 40,
