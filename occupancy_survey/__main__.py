@@ -83,15 +83,26 @@ def _print_plan(cfg: AppConfig) -> None:
           f"{summary['min_detectable_burst_s_at_6db_margin']*1000:.0f} ms "
           f"are not reliably seen")
 
-    from occupancy_survey.detector import required_snr_db
+    from occupancy_survey.detector import (false_alarm_rate,
+                                            occupancy_floor_warning,
+                                            required_snr_db)
     print()
-    print("detection edge (SNR a continuous carrier needs):")
+    print("per band: SNR a continuous carrier needs, and the occupancy an "
+          "EMPTY channel reads")
+    warnings_seen = []
     for b in bands:
-        from occupancy_survey.schedule import tune_steps
         bin_hz = cfg.sdr.sample_rate_hz / cfg.sdr.fft_size
         n_bins = max(1, int(b.channel_bandwidth_hz / bin_hz))
+        edge = required_snr_db(cfg.detection.threshold_db, n_bins,
+                               cfg.detection.baseline_percentile)
+        floor = false_alarm_rate(cfg.detection.threshold_db, n_bins,
+                                 cfg.detection.baseline_percentile)
         print(f"  {b.name:<14} {n_bins:4d} bins/channel -> "
-              f"{required_snr_db(cfg.detection.threshold_db, n_bins, cfg.detection.baseline_percentile):5.1f} dB")
+              f"{edge:5.1f} dB SNR, noise floor {100*floor:7.4f}%")
+        w = occupancy_floor_warning(cfg.detection.threshold_db, n_bins,
+                                    cfg.detection.baseline_percentile)
+        if w:
+            warnings_seen.append(f"{b.name}: {w}")
 
     print()
     print("catch probability for a periodic transmission:")
@@ -104,6 +115,8 @@ def _print_plan(cfg: AppConfig) -> None:
               f"{r['implied_duty']*100:6.2f}% {r['catch_probability']:8.3f}  "
               f"{note}")
 
+    for w in warnings_seen:
+        print(f"\nWARNING: {w}")
     for w in summary["warnings"]:
         print(f"\nWARNING: {w}")
 

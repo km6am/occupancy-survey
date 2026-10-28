@@ -106,6 +106,35 @@ not many.
 
 ---
 
+## 4b. The other floor: what an empty channel reads
+
+Integration length is not the only floor. A channel carrying **nothing**
+still reads some occupancy, because noise occasionally clears the
+threshold, and that rate is set almost entirely by **bins per channel**:
+
+| bins/channel | occupancy an empty channel reads (10 dB threshold) |
+|---|---|
+| 1 | **5.6%** |
+| 2 | 0.20% |
+| 4 | 0.0019% |
+| 12 | 0.0000003% |
+| 22 *(default config)* | negligible |
+
+A one-bin channel is catastrophic: a 5.6% floor swamps the 10–25% duty
+cycles this survey exists to measure. This was found by ingesting an
+`rtl_power` CSV whose 12.5 kHz bins made each 12.5 kHz channel exactly one
+bin wide — ninety noise-only channels reported 1.7–15% occupancy.
+
+`false_alarm_rate()` computes it, `--plan` prints it per band, and every
+dataset records `noise_floor_occupancy` per band so a reader knows whether a
+3% figure might be nothing at all.
+
+**The fix is a finer FFT bin, not a higher threshold.** Raising the
+threshold buries the false alarms and the weak real signals together; more
+bins per channel improves sensitivity and the false-alarm rate at once.
+
+---
+
 ## 5. The load-bearing assumption
 
 > **Visit times are uncorrelated with the traffic's own periodicity.**

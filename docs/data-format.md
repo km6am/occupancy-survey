@@ -85,6 +85,13 @@ AGC enabled is a **refusal, not a warning**: the noise floor moved during
 acquisition, so every noise-floor-relative threshold in the file is
 meaningless and nothing downstream can detect that after the fact.
 
+Each band additionally records **`noise_floor_occupancy`** — the occupancy
+an empty channel reads at that file's threshold and channel width — plus a
+`noise_floor_warning` sentence when it is large enough to matter. It is
+governed by bins per channel and reaches 5.6% at one bin per channel, which
+would swamp the duty cycles being measured. See
+[sampling-design.md](sampling-design.md) §4b.
+
 `sampling` also carries the derived bounds from
 [sampling-design.md](sampling-design.md) — cycle time, visits per interval,
 minimum detectable burst — and any `warnings` the schedule raised, such as a

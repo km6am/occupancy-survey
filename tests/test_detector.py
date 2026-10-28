@@ -8,7 +8,9 @@ from occupancy_survey.channels import BandPlan, TARGET
 from occupancy_survey.detector import (BandBaseline, ChannelLevelExtractor,
                                        ThresholdPolicy,
                                        baseline_elevation_db, decide,
+                                       false_alarm_rate,
                                        max_bin_noise_bias_db,
+                                       occupancy_floor_warning,
                                        required_snr_db)
 from occupancy_survey.occupancy import BandAccumulator, HistogramSpec
 from tests.synthetic_band import SyntheticBand, SyntheticEmitter
@@ -281,6 +283,81 @@ class TestThresholdSensitivity(unittest.TestCase):
         self.assertAlmostEqual(from_hist, by_strict[f]["occupancy"], delta=1e-9,
                                msg="re-thresholding the stored histogram must "
                                    "match a re-run at that threshold")
+
+
+class TestFalseAlarmRate(unittest.TestCase):
+    """The occupancy floor: what an EMPTY channel reads.
+
+    Found by ingesting an rtl_power CSV whose 12.5 kHz bins made every
+    channel exactly one bin wide. Ninety noise-only channels reported
+    1.7-15% occupancy -- a floor that would have swamped the 10-25%
+    duty cycles this survey exists to measure.
+    """
+
+    def test_matches_simulation_across_channel_widths(self):
+        rng = np.random.default_rng(0)
+        for n_bins, tol in ((1, 0.006), (2, 0.0012)):
+            noise = rng.exponential(1.0, size=(3000, 200, n_bins))
+            levels = noise.max(axis=2)
+            baseline = np.percentile(levels, 25, axis=1, keepdims=True)
+            simulated = float(np.mean(levels >= baseline * 10.0))
+            predicted = false_alarm_rate(10.0, n_bins)
+            self.assertAlmostEqual(
+                simulated, predicted, delta=tol,
+                msg=f"{n_bins} bin(s): analytic {predicted:.4e}, simulated "
+                    f"{simulated:.4e}")
+
+    def test_one_bin_per_channel_is_catastrophic(self):
+        """The defect, pinned so it cannot come back unnoticed."""
+        self.assertGreater(false_alarm_rate(10.0, 1), 0.05)
+        self.assertLess(false_alarm_rate(10.0, 12), 1e-6)
+
+    def test_more_bins_always_helps(self):
+        rates = [false_alarm_rate(10.0, n) for n in (1, 2, 4, 8, 16)]
+        self.assertEqual(rates, sorted(rates, reverse=True))
+
+    def test_the_warning_fires_only_when_the_floor_matters(self):
+        self.assertIsNone(occupancy_floor_warning(10.0, 12))
+        w = occupancy_floor_warning(10.0, 1)
+        self.assertIsNotNone(w)
+        self.assertIn("NOISE FLOOR", w)
+        self.assertIn("finer FFT bin", w,
+                      "the warning must name the fix that improves both "
+                      "false alarms and sensitivity, not just a higher "
+                      "threshold")
+
+    def test_a_noise_only_band_reads_near_the_predicted_floor(self):
+        """End-to-end: the analytic floor predicts the measured one."""
+        plan = BandPlan(name="coarse", freq_min_hz=150_800_000.0,
+                        freq_max_hz=151_800_000.0, channel_step_hz=12_500.0,
+                        channel_bandwidth_hz=11_250.0, service="IG",
+                        role=TARGET)
+        channels = plan.channels()
+        policy = ThresholdPolicy()
+        band = SyntheticBand(plan.freq_min_hz - 50_000.0,
+                             plan.freq_max_hz + 50_000.0,
+                             bin_hz=12_500.0, emitters=(), seed=7)
+        ex = ChannelLevelExtractor(channels, band.freq_axis,
+                                   usable_fraction=1.0)
+        self.assertEqual(ex.bins_per_channel, 1,
+                         "12.5 kHz bins must give one bin per channel, "
+                         "which is the case this test is about")
+        baseline = BandBaseline(policy)
+        acc = BandAccumulator(plan, channels, HistogramSpec(), policy)
+        for i in range(250):
+            levels = ex.levels_db(band.sweep(i))
+            acc.add_sweep(decide(levels, baseline.update(levels), policy))
+
+        occs = [r["occupancy"] for r in acc.channel_records()]
+        measured_floor = float(np.mean(occs))
+        predicted = false_alarm_rate(policy.threshold_db,
+                                     ex.bins_per_channel,
+                                     policy.baseline_percentile)
+        self.assertAlmostEqual(
+            measured_floor, predicted, delta=0.02,
+            msg=f"an empty band read {100*measured_floor:.2f}% mean "
+                f"occupancy; false_alarm_rate predicts "
+                f"{100*predicted:.2f}%")
 
 
 class TestNoiseBiasReporting(unittest.TestCase):

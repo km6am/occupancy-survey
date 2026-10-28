@@ -110,8 +110,12 @@ class TestCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("blind spot", out)
-        self.assertIn("detection edge", out)
         self.assertIn("catch probability", out)
+        # The two per-band numbers most easily misread: the threshold is not
+        # an SNR, and an empty channel does not read 0%.
+        self.assertIn("SNR a continuous carrier needs", out)
+        self.assertIn("noise floor", out)
+        self.assertIn("bins/channel", out)
 
     def test_an_unknown_backend_is_an_error_not_a_default(self):
         import tempfile

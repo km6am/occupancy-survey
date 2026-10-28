@@ -53,6 +53,12 @@ fewer than `baseline_percentile`% of a band's channels are busy at once.
 > threshold needs about **12.8 dB** of SNR in a 12-bin channel.
 > `required_snr_db()` computes it; `--plan` prints it per band.
 
+> **An empty channel is not at 0%.** Noise clears the threshold sometimes,
+> at a rate set almost entirely by bins per channel: negligible at the
+> default 22, but **5.6% at one bin per channel**. `--plan` prints it per
+> band and every dataset records it. The fix is a finer FFT bin, not a
+> higher threshold.
+
 **2. Fixed gain, AGC off.** Not a default — AGC is absent from the config
 schema, the source factory raises on it, and the dataset writer refuses a
 file that claims it. An AGC moves the noise floor and takes the occupancy

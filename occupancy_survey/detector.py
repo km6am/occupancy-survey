@@ -191,6 +191,70 @@ def required_snr_db(threshold_db: float, bins_per_channel: int,
     return 10.0 * math.log10(s)
 
 
+def false_alarm_rate(threshold_db: float, bins_per_channel: int,
+                     percentile: float = 25.0) -> float:
+    """Probability that NOISE ALONE clears the threshold, per sample.
+
+    This is the occupancy floor of a configuration: a channel carrying
+    nothing still reads this much occupancy, so any duty cycle near it is
+    indistinguishable from an empty channel.
+
+    For N independent exponential bins and a baseline at x_p times mean
+    noise power, a sample is a false alarm when the max bin exceeds
+    y = x_p * 10^(T/10):
+
+        P = 1 - (1 - exp(-y))^N
+
+    IT IS DOMINATED BY BINS PER CHANNEL, and catastrophically so at the
+    bottom. A 12-bin channel at a 10 dB threshold gives about 3e-9 --
+    nothing. A ONE-BIN channel at the same threshold gives 5.6%, because
+    the max of one bin is just that bin and single-bin exponential noise
+    has a heavy tail. A 5.6% floor would swamp the 10-25% conventional-LMR
+    duty cycles this survey exists to measure.
+
+    Found by ingesting an rtl_power CSV whose 12.5 kHz bins made every
+    12.5 kHz channel exactly one bin wide: ninety noise-only channels
+    reported 1.7-15% occupancy. The fix is a finer FFT bin, not a higher
+    threshold -- raising the threshold to bury the false alarms also buries
+    the weak real signals, while more bins per channel improves both at
+    once.
+
+    Status: *inferred*, analytically, under the same independence
+    assumption as baseline_elevation_db(), and verified against simulation
+    in tests/test_detector.py.
+    """
+    n = max(1, int(bins_per_channel))
+    y = 10.0 ** (baseline_elevation_db(n, percentile) / 10.0) * \
+        10.0 ** (float(threshold_db) / 10.0)
+    if y > 700.0:          # exp(-y) underflows; the rate is unobservably small
+        return 0.0
+    p_one = math.exp(-y)
+    return 1.0 - (1.0 - p_one) ** n
+
+
+def occupancy_floor_warning(threshold_db: float, bins_per_channel: int,
+                            percentile: float = 25.0,
+                            concern_at: float = 0.01) -> str | None:
+    """A sentence to carry in the dataset when the noise floor is high.
+
+    Returned rather than logged so it travels with the data: a reader six
+    months from now has to know that this file's 3% occupancies might be
+    nothing at all.
+    """
+    rate = false_alarm_rate(threshold_db, bins_per_channel, percentile)
+    if rate < concern_at:
+        return None
+    return (
+        f"NOISE FLOOR {100 * rate:.2f}%: with {bins_per_channel} bin(s) per "
+        f"channel at a {threshold_db:.0f} dB threshold, an EMPTY channel "
+        f"reads about {100 * rate:.2f}% occupancy. Any duty cycle below "
+        f"roughly {100 * rate * 3:.1f}% in this dataset is not "
+        f"distinguishable from noise. Use a finer FFT bin so each channel "
+        f"spans several bins; raising the threshold would bury weak real "
+        f"signals along with the false alarms."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Channel level extraction
 # --------------------------------------------------------------------------- #
