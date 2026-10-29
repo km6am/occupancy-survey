@@ -174,3 +174,59 @@ class TestWarningSuppression(unittest.TestCase):
         self.assertTrue(any("alias" in w for w in sched.warnings()),
                         "jitter_fraction=0 on a stepping schedule is still "
                         "a real problem and must still warn")
+
+
+class TestVisitCountAcrossIntervalBoundary(unittest.TestCase):
+    """A band cannot have detections with zero visits.
+
+    Spotted on the live status display during a demonstration run: a band
+    showed `visits 0` beside an active channel at 55.6%. An interval
+    boundary had fallen INSIDE a visit, and _begin_interval resets the
+    visit count while the sweep loop carries on filling the new
+    accumulator -- so the new interval reported no visits while its data
+    accumulated.
+
+    Visibly wrong on screen, and quietly wrong in the presence check,
+    whose detectability bound is a function of how many visits there were:
+    under-counting makes it claim less sensitivity than it had.
+    """
+
+    def test_a_roll_inside_a_visit_still_credits_the_visit(self):
+        from datetime import datetime, timedelta, timezone
+
+        from occupancy_survey.backends.synthetic import SyntheticBackend
+        from occupancy_survey.channels import resolve_bands
+        from occupancy_survey.dataset import read_dataset
+        from occupancy_survey.schedule import SamplingDesign
+        from occupancy_survey.site import SiteMetadata
+        from occupancy_survey.survey import Survey
+
+        # A clock that jumps a full interval on every reading, so a
+        # boundary lands inside essentially every visit.
+        clock = {"t": datetime(2026, 10, 29, tzinfo=timezone.utc)}
+
+        def now_fn():
+            clock["t"] += timedelta(seconds=40)
+            return clock["t"]
+
+        design = SamplingDesign(integration_s=0.01, dwell_s=1.0,
+                                interval_s=30.0, usable_bandwidth_hz=2.048e6)
+        em = [SyntheticEmitter(162_475_000.0, 28.0, duty=1.0,
+                               bandwidth_hz=14_000.0)]
+        with tempfile.TemporaryDirectory() as d:
+            paths = Survey(resolve_bands(["nwr"]),
+                           SyntheticBackend(em, integration_s=0.01,
+                                            sample_rate_hz=2.048e6),
+                           SiteMetadata("s", "RSPdx", "discone"), design,
+                           out_dir=d).run(cycles=4, now_fn=now_fn)
+            datasets = [read_dataset(p) for p in paths]
+
+        with_data = [d for d in datasets
+                     if d["bands"].get("nwr", {}).get("channels")]
+        self.assertTrue(with_data, "expected at least one interval with data")
+        for ds in with_data:
+            self.assertGreater(
+                ds["bands"]["nwr"]["visits"], 0,
+                "an interval holding channel data must report at least one "
+                "visit; zero would understate the presence check's "
+                "detectability bound")

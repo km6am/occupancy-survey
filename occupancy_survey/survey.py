@@ -91,6 +91,7 @@ class Survey:
         self._status_interval_s = 0.0
         self._last_status = 0.0
         self._display = None
+        self._current_visit: tuple[str, float] | None = None
         self._started_monotonic = time.monotonic()
 
         for w in self._schedule.warnings():
@@ -384,6 +385,7 @@ class Survey:
         if (now - self._interval_start) < timedelta(
                 seconds=self._design.interval_s):
             return
+        in_progress = self._current_visit
         carry = {
             name: {"partials": st.accumulator.export_partials(),
                    "bins_per_channel": st.bins_per_channel,
@@ -393,6 +395,16 @@ class Survey:
         }
         self._end_interval(now)
         self._begin_interval(now, carry=carry)
+        if in_progress is not None:
+            name, dwell = in_progress
+            st = self._state.get(name)
+            if st is not None:
+                # One visit, not a fraction: the dwell is split across the
+                # boundary but a visit is the unit the presence check
+                # counts, and crediting it to both sides is closer than
+                # crediting it to neither.
+                st.visits = max(st.visits, 1)
+                st.dwell_total_s = max(st.dwell_total_s, dwell)
 
     def _check_bandwidth(self, axis) -> None:
         """Refuse a design that assumes more bandwidth than the receiver has.
@@ -464,6 +476,13 @@ class Survey:
         st.channels_observed = max(st.channels_observed, extractor.n_observed)
         st.visits += 1
         st.dwell_total_s += float(dwell_s)
+        # Remembered so that an interval boundary falling INSIDE this visit
+        # can credit the new interval with it. Without that the new
+        # interval reports zero visits while its accumulator fills, which
+        # is visibly wrong on the status display and quietly wrong in the
+        # presence check, whose detectability bound is a function of how
+        # many visits there were.
+        self._current_visit = (band.name, float(dwell_s))
 
         if extractor.n_observed == 0:
             logger.warning(
@@ -477,17 +496,21 @@ class Survey:
         # visit as well as the end, so an interrupted run never survives a
         # retune even if a previous visit ended abnormally.
         st.accumulator.mark_observation_break()
-        for sweep in self._backend.sweeps(dwell_s):
-            b = baseline.update(grid_extractor.levels_db(sweep.spectrum_db))
-            levels = extractor.levels_db(sweep.spectrum_db)
-            # Re-read the state each sweep: a mid-visit interval roll
-            # replaces the accumulator underneath us.
-            self._state[band.name].accumulator.add_sweep(
-                decide(levels, b, self._policy),
-                clip_fraction=sweep.clip_fraction)
-            self._maybe_roll_interval()
-            if self._past_deadline():
-                break
+        try:
+            for sweep in self._backend.sweeps(dwell_s):
+                b = baseline.update(
+                    grid_extractor.levels_db(sweep.spectrum_db))
+                levels = extractor.levels_db(sweep.spectrum_db)
+                # Re-read the state each sweep: a mid-visit interval roll
+                # replaces the accumulator underneath us.
+                self._state[band.name].accumulator.add_sweep(
+                    decide(levels, b, self._policy),
+                    clip_fraction=sweep.clip_fraction)
+                self._maybe_roll_interval()
+                if self._past_deadline():
+                    break
+        finally:
+            self._current_visit = None
         self._state[band.name].accumulator.mark_observation_break()
 
 

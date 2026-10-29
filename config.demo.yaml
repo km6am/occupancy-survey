@@ -41,7 +41,9 @@ sdr:
 sampling:
   integration_s: 0.1
   dwell_s: 3.0
-  revisit_target_s: 30.0
+  # Above the real cycle time, so the demo does not open with a
+  # revisit warning that is not telling you anything useful.
+  revisit_target_s: 60.0
   jitter_fraction: 0.25
   interval_s: 60.0
   usable_fraction: 0.8
