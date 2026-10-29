@@ -52,6 +52,11 @@ class SdrConfig:
     rtl_power_csv: str = ""
     rtl_power_interval_s: float = 1.0
 
+    # backend: synthetic only. Carriers to simulate, so that an install
+    # check or a demonstration shows a realistic display rather than an
+    # empty one. Each entry: freq_hz, snr_db, duty, period_s, bandwidth_hz.
+    synthetic_emitters: list = field(default_factory=list)
+
     # Not configurable. See the module docstring.
     agc_enabled: bool = field(default=False, init=False)
 

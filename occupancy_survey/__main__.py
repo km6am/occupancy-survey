@@ -25,13 +25,18 @@ def _build_backend(cfg: AppConfig):
     backend = cfg.sdr.backend.lower().strip()
 
     if backend == "synthetic":
-        from occupancy_survey.backends.synthetic import SyntheticBackend
+        from occupancy_survey.backends.synthetic import (SyntheticBackend,
+                                                          emitters_from_config)
         logger.warning(
             "synthetic backend: NO HARDWARE. The dataset is marked "
             "synthetic and must not be reported as occupancy for this site.")
-        return SyntheticBackend(sample_rate_hz=cfg.sdr.sample_rate_hz,
-                                fft_size=cfg.sdr.fft_size,
-                                integration_s=cfg.sampling.integration_s)
+        return SyntheticBackend(
+            emitters=emitters_from_config(cfg.sdr.synthetic_emitters,
+                                          cfg.sampling.integration_s),
+            sample_rate_hz=cfg.sdr.sample_rate_hz,
+            fft_size=cfg.sdr.fft_size,
+            integration_s=cfg.sampling.integration_s,
+            realtime=True)
 
     if backend in ("rtl_sdr", "rtlsdr", "rtl_sdr_pipe"):
         from occupancy_survey.backends.rtl_sdr_pipe import RtlSdrPipeBackend

@@ -26,6 +26,50 @@ import numpy as np
 from occupancy_survey.backends.base import Backend, Sweep
 
 
+def emitters_from_config(entries, integration_s: float):
+    """Build emitters from config dicts, converting seconds to sweeps.
+
+    A config states a period in SECONDS because that is what a person
+    knows about a transmitter; the generator keys on sweep counts, which
+    depend on the integration period. Converting here keeps the config
+    independent of the sampling settings.
+    """
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Emitter:
+        freq_hz: float
+        snr_db: float
+        duty: float
+        period_sweeps: int
+        phase_sweeps: int
+        bandwidth_hz: float
+
+        def is_on(self, sweep: int) -> bool:
+            if self.duty >= 1.0:
+                return True
+            if self.duty <= 0.0:
+                return False
+            pos = (sweep + self.phase_sweeps) % self.period_sweeps
+            return pos < self.duty * self.period_sweeps
+
+    out = []
+    for i, e in enumerate(entries or []):
+        period_s = float(e.get("period_s", 10.0))
+        period_sweeps = max(2, int(round(period_s / max(integration_s, 1e-9))))
+        out.append(_Emitter(
+            freq_hz=float(e["freq_hz"]),
+            snr_db=float(e.get("snr_db", 25.0)),
+            duty=float(e.get("duty", 1.0)),
+            period_sweeps=period_sweeps,
+            # Spread the phases so simulated carriers are not synchronised,
+            # which would be an unrealistically easy case for the detector.
+            phase_sweeps=(i * 7919) % period_sweeps,
+            bandwidth_hz=float(e.get("bandwidth_hz", 8_000.0)),
+        ))
+    return out
+
+
 class SyntheticBackend(Backend):
     """Noise plus a fixed set of keyed carriers.
 

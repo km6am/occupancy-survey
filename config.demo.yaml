@@ -1,0 +1,61 @@
+# Demonstration / install check. NO HARDWARE REQUIRED.
+#
+#   occupancy-survey --config config.demo.yaml --duration 120 --status-interval 5
+#
+# Simulates a handful of carriers so the live display shows something
+# realistic. The frequencies are real ones predicted audible on the San
+# Francisco peninsula; the duty cycles are INVENTED for the demonstration
+# and are not measurements of anything. Every dataset this writes is marked
+# synthetic and the analysis tools refuse to validate a model against it.
+#
+# THE TIMESCALE IS COMPRESSED on purpose. Real dispatch traffic keys for
+# seconds every few minutes, and a short dwell against a long period lands
+# wholly on or wholly off, so each visit reads 0% or 100% and only converges
+# over many visits -- correct, but it makes a two-minute demonstration look
+# broken. These emitters cycle every few SECONDS so the duty cycles settle
+# while you watch. A real survey runs for days for exactly this reason.
+
+site:
+  site_id: "demo"
+  receiver_model: "synthetic"
+  antenna: "none - simulated"
+
+sdr:
+  backend: "synthetic"
+  sample_rate_hz: 6000000
+  fft_size: 8192
+
+  synthetic_emitters:
+    # VHF land mobile - the measurement targets
+    - {freq_hz: 151475000, snr_db: 26, duty: 0.38, period_s: 3}
+    - {freq_hz: 154050000, snr_db: 24, duty: 0.21, period_s: 5}
+    - {freq_hz: 155162500, snr_db: 22, duty: 0.09, period_s: 7}
+    - {freq_hz: 159525000, snr_db: 25, duty: 0.14, period_s: 4}
+    # NOAA Weather Radio - KHB49, the presence reference
+    - {freq_hz: 162400000, snr_db: 28, duty: 0.95, period_s: 20,
+       bandwidth_hz: 14000}
+    # Broadcast FM - the control band
+    - {freq_hz: 101300000, snr_db: 34, duty: 1.0, bandwidth_hz: 170000}
+    - {freq_hz: 88500000, snr_db: 32, duty: 1.0, bandwidth_hz: 170000}
+
+sampling:
+  integration_s: 0.1
+  dwell_s: 3.0
+  revisit_target_s: 30.0
+  jitter_fraction: 0.25
+  interval_s: 60.0
+  usable_fraction: 0.8
+
+detection:
+  threshold_db: 10.0
+  baseline_percentile: 25.0
+  baseline_window_sweeps: 64
+
+bands:
+  - vhf_lmr_low
+  - nwr
+  - vhf_lmr_high
+  - bcast_fm
+
+output:
+  dir: "./data/demo"

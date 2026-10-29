@@ -168,3 +168,15 @@ If you are unsure about your own jurisdiction, ask before running it.
 
 **It stopped with an error about gain.** Do not set `gain: 0`. Zero means
 automatic, which breaks the measurement. Use 40.
+
+---
+
+## Seeing what it looks like, before you have a dongle
+
+```bash
+occupancy-survey --config config.demo.yaml --duration 120 --status-interval 5
+```
+
+No hardware needed. It simulates a few carriers so you can see the display
+working and check your install. Everything it writes is marked `synthetic`
+and is not a measurement of anything.
