@@ -15,23 +15,49 @@ occupancy-survey --config config.yaml --check --device
 occupancy-survey --config config.yaml --duration 900
 ```
 
-**It tells you as it goes.** Once a minute it prints what it has found:
+**It states what it is about to do, then tells you as it goes.** First,
+before any data exists:
 
 ```
-[00:04:00] 3 band(s) visited, 6 channel(s) with a carrier
+Starting occupancy survey.
+  site        qth (CM87)
+  receiver    SDRplay RSPdx / discone at 6 m
+  backend     gnuradio
+  bands       vhf_lmr_low, nwr, vhf_lmr_high, uhf_lmr, bcast_fm
+              2,494 channels, 14 tune step(s)
+  threshold   10.0 dB above a 25th-percentile baseline
+  schedule    20 s dwell, 287 s cycle, 25% jitter
+  blind spot  bursts shorter than 25 ms
+  output      ./data  (one file per 60 min)
+  Ctrl-C stops and finalises the interval in progress.
+```
+
+Then, every minute, a block that **redraws in place** rather than
+scrolling:
+
+```
+occupancy survey   qth   elapsed 00:04:00   0 file(s) written
+  band          visits   chans  active   busiest
+  vhf_lmr_low       12     417       5     151.4750 MHz  38.2%
+  nwr                3       7       1     162.4750 MHz 100.0%   [reference]
+  vhf_lmr_high      12     369       2     159.5250 MHz  14.1%
+  uhf_lmr            4    1601       0            -- nothing detected
+  bcast_fm           6     100       9     101.3000 MHz 100.0%   [pass]
+  17 channel(s) with a carrier across 5 band(s) visited
+  busiest channels
       162.4750 MHz  100.0%  n=24,180  nwr
       101.3000 MHz  100.0%  n=23,900  bcast_fm
       151.4750 MHz   38.2%  n=25,044  vhf_lmr_low
-      154.0550 MHz   21.4%  n=25,044  vhf_lmr_low
-      155.1600 MHz    9.1%  n=25,044  vhf_lmr_low
-    control bcast_fm: 100.0% (pass)
+      ... and 14 more
 ```
 
-That is the confirmation it is working — channel count and duty cycles,
-without waiting for a file. If nothing is detected it says so, and says
-what to check.
+That is the confirmation it is working: a row per band with how many of
+its channels carry a carrier, and the busiest with its duty cycle.
 
-`--status-interval 0` turns it off; the default is every 60 seconds.
+It redraws in place on a terminal and falls back to plain appended blocks
+when output is piped to a file or run under `systemd` or `nohup`, where
+escape codes would be noise. `--status-interval 0` turns it off; the
+default is every 60 seconds.
 
 | what you see | what it means |
 |---|---|

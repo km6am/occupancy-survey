@@ -107,13 +107,16 @@ much faster.
 channels it is hearing and how busy they are:
 
 ```
-[00:04:00] 3 band(s) visited, 6 channel(s) with a carrier
-      101.3000 MHz  100.0%  n=23,900  bcast_fm
-      151.4750 MHz   38.2%  n=25,044  vhf_lmr_low
-    control bcast_fm: 100.0% (pass)
+occupancy survey   portland-1   elapsed 00:04:00   0 file(s) written
+  band          visits   chans  active   busiest
+  vhf_lmr_low       12     417       5     151.4750 MHz  38.2%
+  nwr                3       7       1     162.4750 MHz 100.0%   [reference]
+  bcast_fm           6     100       9     101.3000 MHz 100.0%   [pass]
+  17 channel(s) with a carrier across 4 band(s) visited
 ```
 
-If that list has entries in it, it is working. If it stays empty for more
+The **active** column is the one to watch. If it has numbers in it, and
+`bcast_fm` says `[pass]`, it is working. If it stays empty for more
 than a few minutes, move the antenna near a window and try again.
 
 For more detail, open the newest file in `data/` — they are gzipped JSON,

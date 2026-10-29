@@ -113,13 +113,14 @@ class TestNothingDetected(unittest.TestCase):
 
 class TestFormatting(unittest.TestCase):
 
-    def test_the_control_band_verdict_is_shown(self):
+    def test_the_control_band_verdict_is_shown_on_its_row(self):
         em = [SyntheticEmitter(101_300_000.0, 34.0, duty=1.0,
                                bandwidth_hz=170_000.0)]
         with tempfile.TemporaryDirectory() as d:
             text = _survey(em, ["bcast_fm"], d, cycles=6).format_status()
-        self.assertIn("control bcast_fm", text)
-        self.assertIn("pass", text)
+        row = [l for l in text.splitlines() if l.strip().startswith("bcast_fm")]
+        self.assertTrue(row, "the band must have its own summary row")
+        self.assertIn("[pass]", row[0])
 
     def test_long_lists_are_truncated_with_a_count(self):
         em = [SyntheticEmitter(151_000_000.0 + i * 100_000.0, 26.0, duty=1.0)
@@ -127,9 +128,11 @@ class TestFormatting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             s = _survey(em, ["vhf_lmr_low"], d, cycles=6)
             text = s.format_status(max_rows=4)
-        self.assertLessEqual(len([l for l in text.splitlines()
-                                  if "MHz" in l]), 4)
-        self.assertIn("and", text)
+        # Only the indented "busiest channels" rows are capped; the per-band
+        # table has one row per band regardless.
+        detail = [l for l in text.splitlines()
+                  if l.startswith("    ") and "MHz" in l]
+        self.assertLessEqual(len(detail), 4)
         self.assertIn("more", text)
 
     def test_a_band_never_visited_is_not_reported(self):
@@ -140,3 +143,159 @@ class TestFormatting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerBandSummary(unittest.TestCase):
+    """A row per band, so 'which band is busy' is answerable at a glance."""
+
+    def test_every_configured_band_gets_a_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            text = _survey([], ["vhf_lmr_low", "nwr"], d,
+                           cycles=2).format_status()
+        for band in ("vhf_lmr_low", "nwr"):
+            self.assertTrue(
+                [l for l in text.splitlines() if l.strip().startswith(band)],
+                f"{band} has no summary row")
+
+    def test_a_row_shows_visits_channel_count_and_active_count(self):
+        em = [SyntheticEmitter(151_475_000.0, 26.0, duty=1.0)]
+        with tempfile.TemporaryDirectory() as d:
+            text = _survey(em, ["vhf_lmr_low"], d, cycles=4).format_status()
+        row = [l for l in text.splitlines()
+               if l.strip().startswith("vhf_lmr_low")][0]
+        self.assertIn("417", row, "total channel count in the band")
+        self.assertIn("151.4750 MHz", row, "the busiest channel")
+
+    def test_a_band_with_nothing_detected_says_so_on_its_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            text = _survey([], ["nwr"], d, cycles=2).format_status()
+        row = [l for l in text.splitlines() if l.strip().startswith("nwr")][0]
+        self.assertIn("nothing detected", row)
+
+
+class TestInitialStatement(unittest.TestCase):
+    """Printed before any data exists, so an unattended run can be checked
+    against what was intended without waiting for the first frame."""
+
+    def _statement(self, bands=("vhf_lmr_low", "nwr")):
+        design = SamplingDesign(**DESIGN)
+        s = Survey(resolve_bands(list(bands)),
+                   SyntheticBackend([], integration_s=0.01,
+                                    sample_rate_hz=6e6),
+                   SiteMetadata("qth", "RSPdx", "discone", "CM87"),
+                   design, out_dir="/tmp")
+        return s.initial_statement()
+
+    def test_it_names_the_site_receiver_bands_and_threshold(self):
+        t = self._statement()
+        for expected in ("qth", "CM87", "RSPdx", "discone",
+                         "vhf_lmr_low", "nwr", "threshold", "output"):
+            self.assertIn(expected, t)
+
+    def test_it_states_the_blind_spot_before_the_run_not_after(self):
+        self.assertIn("blind spot", self._statement())
+
+    def test_a_withheld_location_is_stated_as_such(self):
+        design = SamplingDesign(**DESIGN)
+        s = Survey(resolve_bands(["nwr"]),
+                   SyntheticBackend([], integration_s=0.01,
+                                    sample_rate_hz=6e6),
+                   SiteMetadata("qth", "RSPdx", "discone"),
+                   design, out_dir="/tmp")
+        self.assertIn("location withheld", s.initial_statement())
+
+    def test_the_synthetic_backend_is_flagged_in_the_opening_block(self):
+        """Nobody should get minutes into a run before noticing."""
+        self.assertIn("NO HARDWARE", self._statement())
+
+
+class _FakeTTY:
+    """A stream that claims to be a terminal, so the in-place path runs."""
+
+    def __init__(self):
+        self.buf = []
+
+    def isatty(self):
+        return True
+
+    def write(self, s):
+        self.buf.append(s)
+
+    def flush(self):
+        pass
+
+    def text(self):
+        return "".join(self.buf)
+
+
+class TestNonScrollingDisplay(unittest.TestCase):
+    """In-place redraw, and the four ways it can go wrong."""
+
+    def test_a_terminal_gets_cursor_movement_not_repeated_blocks(self):
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        d.render("one\ntwo")
+        d.render("one\ntwo")
+        text = tty.text()
+        self.assertIn("\033[2F", text,
+                      "the second frame must move the cursor up two lines")
+
+    def test_a_non_terminal_emits_no_escape_codes(self):
+        """Escapes in a log file under nohup or systemd are garbage."""
+        import io
+        from occupancy_survey.display import StatusDisplay
+        buf = io.StringIO()
+        d = StatusDisplay(stream=buf)
+        self.assertFalse(d.in_place)
+        d.render("a\nb")
+        d.render("c\nd")
+        self.assertNotIn("\033", buf.getvalue())
+        self.assertIn("c\nd", buf.getvalue())
+
+    def test_long_lines_are_truncated_to_the_terminal_width(self):
+        """A wrapped line occupies two rows, which breaks the cursor maths
+        and corrupts every later frame."""
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        width = d._width()
+        d.render("x" * (width + 200))
+        longest = max((len(l) for l in tty.text().split("\n")), default=0)
+        self.assertLessEqual(longest - len("\033[K"), width)
+
+    def test_a_shrinking_block_clears_the_rows_it_vacates(self):
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        d.render("a\nb\nc\nd")
+        tty.buf.clear()
+        d.render("a")
+        self.assertIn("\033[K", tty.text(),
+                      "vacated rows must be cleared or stale text remains")
+
+    def test_invalidate_forces_a_fresh_draw(self):
+        """Log output moves the cursor without the display knowing, so the
+        next frame must not try to move up over it."""
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        d.render("a\nb")
+        d.invalidate()
+        tty.buf.clear()
+        d.render("a\nb")
+        self.assertNotIn("\033[2F", tty.text(),
+                         "after invalidation the frame must be drawn fresh")
+
+    def test_force_plain_overrides_a_terminal(self):
+        from occupancy_survey.display import StatusDisplay
+        d = StatusDisplay(stream=_FakeTTY(), force_plain=True)
+        self.assertFalse(d.in_place)

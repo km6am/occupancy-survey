@@ -34,16 +34,21 @@ and the SDRplay API, which are not pip-installable.
 `--check` and `--plan` touch no hardware. Run both before committing to
 anything long: `--plan` tells you what the configuration *cannot* see.
 
-While a survey runs it prints, once a minute, how many channels have a
-carrier and what their duty cycles are — so you can confirm it is working
-without waiting for the first hourly file:
+It opens by stating what it is about to do — site, receiver, bands,
+threshold, blind spot, where the output goes — and then shows a per-band
+summary that **redraws in place** once a minute, so you can confirm it is
+working without waiting for the first hourly file:
 
 ```
-[00:04:00] 3 band(s) visited, 6 channel(s) with a carrier
-      151.4750 MHz   38.2%  n=25,044  vhf_lmr_low
-      154.0550 MHz   21.4%  n=25,044  vhf_lmr_low
-    control bcast_fm: 100.0% (pass)
+occupancy survey   qth   elapsed 00:04:00   0 file(s) written
+  band          visits   chans  active   busiest
+  vhf_lmr_low       12     417       5     151.4750 MHz  38.2%
+  nwr                3       7       1     162.4750 MHz 100.0%   [reference]
+  bcast_fm           6     100       9     101.3000 MHz 100.0%   [pass]
+  17 channel(s) with a carrier across 5 band(s) visited
 ```
+
+In-place on a terminal, plain appended blocks when piped to a log.
 
 Volunteers running an RTL-SDR should read
 [docs/volunteer-quickstart.md](docs/volunteer-quickstart.md) instead — one

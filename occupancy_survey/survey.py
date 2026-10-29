@@ -90,6 +90,7 @@ class Survey:
         self._deadline: float | None = None
         self._status_interval_s = 0.0
         self._last_status = 0.0
+        self._display = None
         self._started_monotonic = time.monotonic()
 
         for w in self._schedule.warnings():
@@ -194,6 +195,16 @@ class Survey:
         self._status_interval_s = float(status_interval_s)
         self._started_monotonic = time.monotonic()
         self._last_status = self._started_monotonic
+        if self._status_interval_s > 0:
+            from occupancy_survey.display import (StatusDisplay,
+                                                  attach_logging_guard)
+            self._display = StatusDisplay()
+            # Printed before the first frame and before any data exists, so
+            # the opening block scrolls away above a status that then
+            # redraws in place below it.
+            print(self.initial_statement(), flush=True)
+            print(flush=True)
+            attach_logging_guard(self._display)
         self._begin_interval(self._clock())
 
         cycle = 0
@@ -212,6 +223,8 @@ class Survey:
             logger.info("stopping")
         finally:
             self._maybe_status(force=True)
+            if self._display is not None:
+                self._display.finish()
             self._end_interval(self._clock())
 
         return list(self._written)
@@ -245,38 +258,119 @@ class Survey:
             "controls": controls,
         }
 
-    def format_status(self, max_rows: int = 8) -> str:
-        """One compact block an operator can read at a glance."""
-        snap = self.status_snapshot()
-        el = int(snap["elapsed_s"])
-        head = (f"[{el//3600:02d}:{(el//60)%60:02d}:{el%60:02d}] "
-                f"{len(snap['bands_visited'])} band(s) visited, "
-                f"{snap['n_active']} channel(s) with a carrier")
-        if not snap["channels"]:
-            return (head + "\n    nothing detected yet -- normal in the "
-                    "first minutes; if it persists, check the antenna, "
-                    "the gain and the threshold")
-        lines = [head]
-        for r in snap["channels"][:max_rows]:
-            lines.append(f"    {r['freq_hz']/1e6:10.4f} MHz  "
-                         f"{100*r['occupancy']:5.1f}%  "
-                         f"n={r['n_decided']:,}  {r['band']}")
-        if snap["n_active"] > max_rows:
-            lines.append(f"    ... and {snap['n_active'] - max_rows} more")
-        for name, chk in snap["controls"]:
-            lines.append(f"    control {name}: "
-                         f"{100*(chk['max_measured_occupancy'] or 0):.1f}% "
-                         f"({chk['verdict']})")
+    def initial_statement(self) -> str:
+        """What is about to happen, printed before any data exists.
+
+        An operator starting an unattended multi-day run should be able to
+        see, in one block, that the thing they configured is the thing
+        about to run -- site, receiver, bands, threshold and where the
+        output goes -- rather than inferring it from the first status
+        frame several minutes later.
+        """
+        from occupancy_survey.schedule import tune_steps
+
+        summary = self._schedule.design_summary()
+        n_channels = sum(len(b.channels()) for b in self._bands)
+        steps = sum(len(tune_steps(b, self._design)) for b in self._bands)
+        site = self._site
+        recv = self._backend.receiver_metadata()
+        where = site.grid_square or "location withheld"
+
+        lines = [
+            "Starting occupancy survey.",
+            f"  site        {site.site_id} ({where})",
+            f"  receiver    {site.receiver_model} / {site.antenna}",
+            f"  backend     {recv.get('backend', '?')}"
+            + ("   NO HARDWARE - produces no measurements"
+               if recv.get("synthetic") else ""),
+            f"  bands       {', '.join(b.name for b in self._bands)}",
+            f"              {n_channels:,} channels, {steps} tune step(s)",
+            f"  threshold   {self._policy.threshold_db:.1f} dB above a "
+            f"{self._policy.baseline_percentile:.0f}th-percentile baseline",
+            f"  schedule    {self._design.dwell_s:g} s dwell, "
+            f"{summary['cycle_time_s']:.0f} s cycle, "
+            f"{self._design.jitter_fraction:.0%} jitter",
+            f"  blind spot  bursts shorter than "
+            f"{summary['min_detectable_burst_s_at_6db_margin']*1000:.0f} ms",
+            f"  output      {self._out_dir}  "
+            f"(one file per {self._design.interval_s/60:.0f} min)",
+        ]
+        for w in summary.get("warnings", []):
+            lines.append(f"  WARNING     {w}")
+        lines.append("  Ctrl-C stops and finalises the interval in progress.")
         return "\n".join(lines)
 
+    def format_status(self, max_rows: int = 6) -> str:
+        """Per-band summary, with the busiest channels under it."""
+        snap = self.status_snapshot()
+        el = int(snap["elapsed_s"])
+        clock = f"{el//3600:02d}:{(el//60)%60:02d}:{el%60:02d}"
+
+        per_band = {b.name: {"visits": 0, "channels": 0, "active": 0,
+                             "top": None, "control": None}
+                    for b in self._bands}
+        for band in self._bands:
+            st = self._state.get(band.name)
+            if st is None:
+                continue
+            e = per_band[band.name]
+            e["visits"] = st.visits
+            e["channels"] = len(st.accumulator.channels)
+            rows = st.accumulator.active_channels()
+            e["active"] = len(rows)
+            e["top"] = rows[0] if rows else None
+            chk = st.accumulator.control_check()
+            if chk is not None:
+                e["control"] = chk["verdict"]
+            pres = getattr(band, "presence", None)
+            if pres is not None and pres.enabled and e["control"] is None:
+                e["control"] = "reference"
+
+        width = max(len(n) for n in per_band) if per_band else 12
+        out = [
+            f"occupancy survey   {self._site.site_id}   elapsed {clock}   "
+            f"{len(self._written)} file(s) written",
+            f"  {'band':<{width}}  {'visits':>6}  {'chans':>6}  "
+            f"{'active':>6}   busiest",
+        ]
+        for name, e in per_band.items():
+            if e["top"]:
+                busiest = (f"{e['top']['freq_hz']/1e6:10.4f} MHz "
+                           f"{100*e['top']['occupancy']:5.1f}%")
+            elif e["visits"]:
+                busiest = "       -- nothing detected"
+            else:
+                busiest = "       -- not yet visited"
+            tag = f"   [{e['control']}]" if e["control"] else ""
+            out.append(f"  {name:<{width}}  {e['visits']:6d}  "
+                       f"{e['channels']:6d}  {e['active']:6d}   "
+                       f"{busiest}{tag}")
+
+        out.append(f"  {snap['n_active']} channel(s) with a carrier across "
+                   f"{len(snap['bands_visited'])} band(s) visited")
+
+        if snap["channels"]:
+            out.append("  busiest channels")
+            for r in snap["channels"][:max_rows]:
+                out.append(f"    {r['freq_hz']/1e6:10.4f} MHz  "
+                           f"{100*r['occupancy']:5.1f}%  "
+                           f"n={r['n_decided']:,}  {r['band']}")
+            if snap["n_active"] > max_rows:
+                out.append(f"    ... and {snap['n_active'] - max_rows} more")
+        elif any(e["visits"] for e in per_band.values()):
+            out.append("  nothing detected yet -- normal in the first "
+                       "minutes; if it persists,")
+            out.append("  check the antenna, the gain and the threshold")
+        return "\n".join(out)
+
     def _maybe_status(self, force: bool = False) -> None:
-        if self._status_interval_s <= 0:
+        if self._status_interval_s <= 0 or self._display is None:
             return
         now = time.monotonic()
         if not force and (now - self._last_status) < self._status_interval_s:
             return
         self._last_status = now
-        print(self.format_status(), flush=True)
+        self._display.render(self.format_status())
 
     def _past_deadline(self) -> bool:
         return (self._deadline is not None
