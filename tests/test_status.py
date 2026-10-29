@@ -299,3 +299,21 @@ class TestNonScrollingDisplay(unittest.TestCase):
         from occupancy_survey.display import StatusDisplay
         d = StatusDisplay(stream=_FakeTTY(), force_plain=True)
         self.assertFalse(d.in_place)
+
+
+class TestNoVerdictBeforeData(unittest.TestCase):
+
+    def test_an_unvisited_control_band_shows_no_verdict(self):
+        """A verdict computed from no data is noise beside "not yet
+        visited", and briefly looks like a failure."""
+        design = SamplingDesign(**DESIGN)
+        s = Survey(resolve_bands(["bcast_fm", "nwr"]),
+                   SyntheticBackend([], integration_s=0.01,
+                                    sample_rate_hz=6e6),
+                   SiteMetadata("qth", "RSPdx", "discone"),
+                   design, out_dir="/tmp")
+        text = s.format_status()
+        row = [l for l in text.splitlines()
+               if l.strip().startswith("bcast_fm")][0]
+        self.assertIn("not yet visited", row)
+        self.assertNotIn("no_channels_observed", row)

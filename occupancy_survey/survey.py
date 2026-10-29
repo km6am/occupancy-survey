@@ -320,9 +320,13 @@ class Survey:
             rows = st.accumulator.active_channels()
             e["active"] = len(rows)
             e["top"] = rows[0] if rows else None
-            chk = st.accumulator.control_check()
-            if chk is not None:
-                e["control"] = chk["verdict"]
+            # Only once the band has actually been visited: a verdict on
+            # no data ("no_channels_observed") is noise next to a row that
+            # already says "not yet visited".
+            if st.visits:
+                chk = st.accumulator.control_check()
+                if chk is not None:
+                    e["control"] = chk["verdict"]
             pres = getattr(band, "presence", None)
             if pres is not None and pres.enabled and e["control"] is None:
                 e["control"] = "reference"
