@@ -267,7 +267,21 @@ tools.
 
 ---
 
-## 9. Uninstall
+## 9. Bringing up a new survey host with Claude Code
+
+`CLAUDE.md` in the repository root loads automatically into a Claude Code
+session and carries the settled design decisions, the hard constraints, and
+the places where earlier estimates turned out wrong — so a new session does
+not re-derive or relitigate them.
+
+[docs/survey-host-bringup.md](docs/survey-host-bringup.md) has a brief to
+paste in, a checklist that stops at the first failure rather than working
+around it, what a working bring-up looks like, and the problems to expect
+in the order they appear.
+
+---
+
+## 10. Uninstall
 
 ```bash
 pip uninstall occupancy-survey

@@ -236,6 +236,11 @@ channel list is a small JSON generated on the analysis host and copied
 across. Point the analysis tools at a different checkout with
 `SOTA_RF_DIR=/path/to/sota-rf`.
 
+Starting a Claude Code session on the survey machine? `CLAUDE.md` loads
+automatically and carries the settled design decisions, and
+[docs/survey-host-bringup.md](docs/survey-host-bringup.md) has a brief to
+paste in, what "working" looks like, and the problems to expect first.
+
 Before any long run, on the machine that will do the surveying:
 
 ```bash
