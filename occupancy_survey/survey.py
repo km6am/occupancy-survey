@@ -88,6 +88,9 @@ class Survey:
         self._applied_front_end: str | None = None
         self._clock = lambda: datetime.now(timezone.utc)
         self._deadline: float | None = None
+        self._status_interval_s = 0.0
+        self._last_status = 0.0
+        self._started_monotonic = time.monotonic()
 
         for w in self._schedule.warnings():
             logger.warning("sampling design: %s", w)
@@ -172,7 +175,7 @@ class Survey:
     # ----------------------------------------------------------------- #
 
     def run(self, cycles: int | None = None, duration_s: float | None = None,
-            now_fn=None):
+            now_fn=None, status_interval_s: float = 0.0):
         """Run the schedule, writing one file per interval.
 
         Stops after `cycles` full passes, or after `duration_s`, whichever
@@ -188,6 +191,9 @@ class Survey:
         self._clock = now_fn or (lambda: datetime.now(timezone.utc))
         self._deadline = (time.monotonic() + duration_s
                           if duration_s is not None else None)
+        self._status_interval_s = float(status_interval_s)
+        self._started_monotonic = time.monotonic()
+        self._last_status = self._started_monotonic
         self._begin_interval(self._clock())
 
         cycle = 0
@@ -198,15 +204,79 @@ class Survey:
                 for band, step, dwell in self._schedule.visits(cycles=1):
                     self._visit(band, step, dwell)
                     self._maybe_roll_interval()
+                    self._maybe_status()
                     if self._past_deadline():
                         raise _Done
                 cycle += 1
         except (_Done, KeyboardInterrupt):
             logger.info("stopping")
         finally:
+            self._maybe_status(force=True)
             self._end_interval(self._clock())
 
         return list(self._written)
+
+    def status_snapshot(self) -> dict:
+        """What has been detected so far, across the interval in progress.
+
+        Deliberately reads live accumulator state rather than written
+        files: with an hourly interval, a file-based status would tell an
+        operator nothing for an hour, which is exactly the window in which
+        they want to know the receiver is working.
+        """
+        bands, rows, controls = [], [], []
+        for band in self._bands:
+            st = self._state.get(band.name)
+            if st is None or not st.visits:
+                continue
+            acc = st.accumulator
+            bands.append(band.name)
+            for r in acc.active_channels():
+                rows.append({**r, "band": band.name})
+            chk = acc.control_check()
+            if chk is not None:
+                controls.append((band.name, chk))
+        rows.sort(key=lambda r: r["occupancy"], reverse=True)
+        return {
+            "elapsed_s": time.monotonic() - self._started_monotonic,
+            "bands_visited": bands,
+            "n_active": len(rows),
+            "channels": rows,
+            "controls": controls,
+        }
+
+    def format_status(self, max_rows: int = 8) -> str:
+        """One compact block an operator can read at a glance."""
+        snap = self.status_snapshot()
+        el = int(snap["elapsed_s"])
+        head = (f"[{el//3600:02d}:{(el//60)%60:02d}:{el%60:02d}] "
+                f"{len(snap['bands_visited'])} band(s) visited, "
+                f"{snap['n_active']} channel(s) with a carrier")
+        if not snap["channels"]:
+            return (head + "\n    nothing detected yet -- normal in the "
+                    "first minutes; if it persists, check the antenna, "
+                    "the gain and the threshold")
+        lines = [head]
+        for r in snap["channels"][:max_rows]:
+            lines.append(f"    {r['freq_hz']/1e6:10.4f} MHz  "
+                         f"{100*r['occupancy']:5.1f}%  "
+                         f"n={r['n_decided']:,}  {r['band']}")
+        if snap["n_active"] > max_rows:
+            lines.append(f"    ... and {snap['n_active'] - max_rows} more")
+        for name, chk in snap["controls"]:
+            lines.append(f"    control {name}: "
+                         f"{100*(chk['max_measured_occupancy'] or 0):.1f}% "
+                         f"({chk['verdict']})")
+        return "\n".join(lines)
+
+    def _maybe_status(self, force: bool = False) -> None:
+        if self._status_interval_s <= 0:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_status) < self._status_interval_s:
+            return
+        self._last_status = now
+        print(self.format_status(), flush=True)
 
     def _past_deadline(self) -> bool:
         return (self._deadline is not None

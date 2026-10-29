@@ -15,11 +15,23 @@ occupancy-survey --config config.yaml --check --device
 occupancy-survey --config config.yaml --duration 900
 ```
 
-Then look at one thing: **are channels being detected?**
+**It tells you as it goes.** Once a minute it prints what it has found:
 
-```bash
-python tools/merge_datasets.py data/occ_*.json.gz --band vhf_lmr_low
 ```
+[00:04:00] 3 band(s) visited, 6 channel(s) with a carrier
+      162.4750 MHz  100.0%  n=24,180  nwr
+      101.3000 MHz  100.0%  n=23,900  bcast_fm
+      151.4750 MHz   38.2%  n=25,044  vhf_lmr_low
+      154.0550 MHz   21.4%  n=25,044  vhf_lmr_low
+      155.1600 MHz    9.1%  n=25,044  vhf_lmr_low
+    control bcast_fm: 100.0% (pass)
+```
+
+That is the confirmation it is working — channel count and duty cycles,
+without waiting for a file. If nothing is detected it says so, and says
+what to check.
+
+`--status-interval 0` turns it off; the default is every 60 seconds.
 
 | what you see | what it means |
 |---|---|
@@ -39,7 +51,9 @@ rests on the same threshold.
 occupancy-survey --config config.yaml
 ```
 
-Leave it. One file per hour, about 57 kB each — a week is 10 MB, so
+Leave it. The same status block keeps printing once a minute, so a glance
+at the terminal at any point tells you how many channels are active and
+what their duty cycles are. One file per hour, about 57 kB each — a week is 10 MB, so
 disk is not a consideration. `Ctrl-C` finalises the hour in progress.
 
 Several days is the right length for two reasons: low-duty channels need

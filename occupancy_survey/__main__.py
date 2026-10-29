@@ -219,6 +219,12 @@ def main(argv=None) -> int:
                          "exit. Touches no hardware.")
     ap.add_argument("--json", action="store_true",
                     help="with --plan, emit the design as JSON")
+    ap.add_argument("--status-interval", type=float, default=60.0,
+                    metavar="S",
+                    help="print a live summary of detected channels every "
+                         "S seconds (default 60; 0 disables). This is how "
+                         "you confirm the receiver is working without "
+                         "waiting for the first interval file.")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -333,7 +339,8 @@ def main(argv=None) -> int:
             return 0 if any_run else 5
 
         try:
-            written = survey.run(cycles=args.cycles, duration_s=args.duration)
+            written = survey.run(cycles=args.cycles, duration_s=args.duration,
+                                 status_interval_s=args.status_interval)
         except ValueError as e:
             print(f"refused to run: {e}", file=sys.stderr)
             return 4

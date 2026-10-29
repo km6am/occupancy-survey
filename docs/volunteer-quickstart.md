@@ -103,8 +103,21 @@ much faster.
 
 ## 5. Did it work?
 
-Open the newest file in `data/` — they are gzipped JSON, so
-`gunzip -c data/occ_*.json.gz | head -40` will show the top.
+**The program tells you as it runs.** Once a minute it prints how many
+channels it is hearing and how busy they are:
+
+```
+[00:04:00] 3 band(s) visited, 6 channel(s) with a carrier
+      101.3000 MHz  100.0%  n=23,900  bcast_fm
+      151.4750 MHz   38.2%  n=25,044  vhf_lmr_low
+    control bcast_fm: 100.0% (pass)
+```
+
+If that list has entries in it, it is working. If it stays empty for more
+than a few minutes, move the antenna near a window and try again.
+
+For more detail, open the newest file in `data/` — they are gzipped JSON,
+so `gunzip -c data/occ_*.json.gz | head -40` will show the top.
 
 Look for the `bcast_fm` band and its `control_check`. It should say
 `"verdict": "pass"`.

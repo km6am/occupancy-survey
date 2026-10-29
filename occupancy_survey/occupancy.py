@@ -392,6 +392,32 @@ class BandAccumulator:
         out.sort(key=lambda r: r["freq_hz"])
         return out
 
+    def active_channels(self, limit: int | None = None) -> list[dict]:
+        """Channels seen at least once, strongest occupancy first.
+
+        For the live status display. Reads the interval in progress, so it
+        works from the first sweep rather than waiting for a file to be
+        written -- which with an hourly interval would otherwise mean an
+        hour of silence before an operator could tell a working receiver
+        from a dead one.
+        """
+        rows = []
+        for ch, acc in zip(self.channels, self._chan, strict=True):
+            if not acc.n_present:
+                continue
+            occ = acc.occupancy_at(self.policy.threshold_db)
+            if occ is None:
+                continue
+            rows.append({"freq_hz": ch.freq_hz, "occupancy": occ,
+                         "n_decided": acc.n_decided,
+                         "service": ch.service})
+        rows.sort(key=lambda r: r["occupancy"], reverse=True)
+        return rows[:limit] if limit else rows
+
+    @property
+    def n_channels_seen(self) -> int:
+        return sum(1 for a in self._chan if a.n_present)
+
     def control_check(self) -> dict | None:
         """For a control band, compare measured occupancy to the expectation.
 
