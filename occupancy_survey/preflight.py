@@ -227,6 +227,17 @@ def _probe_device(pf: Preflight, cfg) -> None:
     try:
         with backend:
             band = cfg.band_plans()[0]
+            # Apply the band's filter plan before sweeping. Without this the
+            # probe measured a configuration the survey never uses -- and
+            # since the notches are the FIRST remedy the overload advice
+            # below recommends, probing with them off overstates the
+            # problem it is reporting.
+            fe = backend.set_filters(band.front_end)
+            if fe.get("not_actuated"):
+                pf.add("front-end filters", None,
+                       f"not actuated: {', '.join(fe['not_actuated'])}",
+                       "this receiver cannot switch them; fit an external "
+                       "filter or accept the overload risk")
             backend.tune(band.center_hz, cfg.sampling.usable_bandwidth_hz)
             axis = backend.freq_axis()
             got = next(iter(backend.sweeps(2.0)), None)
@@ -237,8 +248,8 @@ def _probe_device(pf: Preflight, cfg) -> None:
             span = (float(axis[-1] - axis[0]) if len(axis) > 1 else 0.0)
             clip = got.clip_fraction
             pf.add("device access", True,
-                   f"one sweep, {len(got.spectrum_db)} bins over "
-                   f"{span/1e6:.3f} MHz"
+                   f"one sweep of {band.name}, {len(got.spectrum_db)} bins "
+                   f"over {span/1e6:.3f} MHz"
                    + (f", clip {clip:.1e}" if clip is not None else ""))
             if clip is not None and clip > 1e-4:
                 pf.add("front end", False,
