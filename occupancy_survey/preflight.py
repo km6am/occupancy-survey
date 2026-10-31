@@ -214,6 +214,45 @@ def run_preflight(cfg, probe_device: bool = False) -> Preflight:
     return pf
 
 
+
+def _check_gain_lock(pf: Preflight, backend) -> None:
+    """Confirm the device has not moved the gain out from under us."""
+    try:
+        g = backend.gain_in_effect()
+    except Exception as e:                                # pragma: no cover
+        pf.add("gain lock", None, f"could not query: {str(e)[:60]}", "")
+        return
+
+    if not g.get("queryable"):
+        pf.add("gain lock", None, "not checkable on this backend",
+               "fixed gain cannot be verified here; it is assumed, and the "
+               "dataset records that it was not checked")
+        return
+
+    if g.get("agc_mode"):
+        pf.add("gain lock", False, "the device reports AGC ENABLED",
+               "every threshold here is noise-floor-relative and an AGC "
+               "moves the floor. Do not collect until this reads off.")
+        return
+
+    detail = ", ".join(
+        f"{k} {v['actual_db']:+.0f} dB"
+        + ("" if abs(v.get("drift_db", 0.0)) <= g["tolerance_db"]
+           else f" (configured {v['configured_db']:+.0f})")
+        for k, v in sorted(g.get("stages", {}).items())
+        if "actual_db" in v)
+
+    if g.get("locked"):
+        pf.add("gain lock", True, f"{detail}; matches config")
+    else:
+        pf.add("gain lock", False,
+               f"gain moved {g['worst_drift_db']:.1f} dB from config "
+               f"({detail})",
+               "the device changed gain by itself -- most likely its own "
+               "overload correction. A moving gain moves the noise floor "
+               "and every threshold with it. Reduce gain until the device "
+               "stops correcting, then re-check.")
+
 def _probe_device(pf: Preflight, cfg) -> None:
     """Open the SDR and take a single sweep. Opt-in only."""
     from occupancy_survey.__main__ import _build_backend
@@ -257,6 +296,11 @@ def _probe_device(pf: Preflight, cfg) -> None:
                        "the front end is being overloaded: fit the band's "
                        "bandpass, enable the notches, or reduce gain -- in "
                        "that order. See docs/front-end.md")
+
+            # Fixed gain is the premise every threshold here rests on, and
+            # the SDRplay API corrects overloads on its own. Ask the device
+            # whether the gain we set is still the gain in effect.
+            _check_gain_lock(pf, backend)
     except Exception as e:                                # pragma: no cover
         pf.add("device access", False, str(e)[:90],
                "see docs/front-end.md and your backend's install notes")

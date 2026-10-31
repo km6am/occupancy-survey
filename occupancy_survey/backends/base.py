@@ -76,6 +76,17 @@ class Backend(abc.ABC):
                 "actuated_note": "this receiver has no switchable filters; "
                                  "the plan is recorded, not applied"}
 
+    def gain_in_effect(self) -> dict:
+        """Gain the device reports now, against what was configured.
+
+        Fixed gain is load-bearing here, so a backend that can check it
+        should. The default says it cannot rather than claiming the gain
+        held, because "not checked" and "verified stable" must not read
+        the same way in a dataset.
+        """
+        return {"queryable": False,
+                "note": "this backend cannot read gain back"}
+
     def antenna_ports(self) -> list[str]:
         """Selectable antenna ports, or empty for a receiver with one input.
 
