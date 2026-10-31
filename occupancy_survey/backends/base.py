@@ -76,6 +76,24 @@ class Backend(abc.ABC):
                 "actuated_note": "this receiver has no switchable filters; "
                                  "the plan is recorded, not applied"}
 
+    def antenna_ports(self) -> list[str]:
+        """Selectable antenna ports, or empty for a receiver with one input.
+
+        Empty means "nothing to choose", not "unknown": a caller may treat
+        an empty list as a settled question.
+        """
+        return []
+
+    def set_antenna_port(self, name: str) -> str:
+        """Switch port; returns the port in effect afterwards.
+
+        The default refuses rather than pretending, so a port sweep over a
+        single-input receiver fails loudly instead of reporting the same
+        port three times under three names.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no selectable antenna ports")
+
     def set_gain_offset_db(self, offset_db: float) -> bool:
         """Shift gain by `offset_db` for the intermod check; False if fixed.
 

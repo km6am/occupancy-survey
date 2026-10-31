@@ -320,6 +320,43 @@ class GnuRadioBackend(Backend):
             f"multi-step band cannot be surveyed with this device."
         )
 
+    def antenna_ports(self) -> list[str]:
+        """Antenna ports this device reports, straight from the hardware.
+
+        The authoritative list. The GRC block definition shipped with
+        gr-sdrplay3 declares three for the RSPdx, but only the device knows
+        what this build actually accepts.
+        """
+        fn = getattr(self._source, "get_antennas", None)
+        if fn is None:
+            return []
+        try:
+            return [str(p) for p in fn()]
+        except Exception as e:                           # pragma: no cover
+            logger.warning("could not query antenna ports: %s", e)
+            return []
+
+    def set_antenna_port(self, name: str) -> str:
+        """Switch port and return the port the device reports afterwards.
+
+        Returns the device's answer rather than the requested name, because
+        a silently ignored switch would otherwise look like a successful
+        one -- and a port comparison built on that would be meaningless.
+        """
+        self._source.set_antenna(str(name))
+        self._sink.reset()
+        self._clip.take()
+        time.sleep(self._settle_s)
+        self._sink.reset()
+        self._clip.take()
+        getter = getattr(self._source, "get_antenna", None)
+        if getter is None:
+            return str(name)
+        try:
+            return str(getter())
+        except Exception:                                # pragma: no cover
+            return str(name)
+
     def set_filters(self, front_end) -> dict:
         """Actuate the RSPdx's notch filters for this band."""
         applied, missing = {}, []
