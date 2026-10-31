@@ -1,133 +1,183 @@
-# Getting the RSPdx working on one particular Mac
+# GNU Radio + SDRplay on macOS — repair runbook
 
-> **This is a troubleshooting note for a single host, not a prerequisite
-> for the project.** This package is developed on this Mac and intended to
-> *run elsewhere*. If you are deploying to a different machine, you do not
-> need anything on this page — run
-> `python -m occupancy_survey --check` on that machine instead, which
-> reports what is missing there and what to do about it.
->
-> Keep reading only if you want the RSPdx working on *this* development
-> Mac, for local smoke-testing.
+**Status: CONFIRMED WORKING** on macOS 15.7.5 / Apple M3 Max / radioconda,
+2026-10-31.
 
-**Measured on 2026-10-28** (Darwin 24.6.0, Apple silicon). Each failure
-below was reproduced from a neutral working directory. None of the fixes
-needs `sudo`.
+Verified by, in this order:
 
-**Nothing here has been run.** These are proposed commands for the operator
-to run, because repairing a shared conda environment and touching a device
-are both the operator's call.
+```
+204/204 package tests pass under ~/radioconda/bin/python
+numpy 2.2.3, scipy 1.15.2, matplotlib 3.10.1 import
+gnuradio 3.10.12.0, gnuradio.{blocks,fft,filter} import
+gnuradio.sdrplay3 imports; sdrplay3.rspdx is callable
+occupancy_survey's GR backend imports
+--check reports: gnuradio importable, gr-sdrplay3 importable, Ready
+```
+
+Device access remains untested — no receiver was attached. Imports working
+is necessary, not sufficient.
+
+This document exists so the repair does not have to be re-derived. It took
+a long time to find because **every symptom pointed somewhere other than
+the cause.**
 
 ---
 
-## The three breakages
+## 1. The cause
 
-### 1. radioconda's numpy is broken
+**macOS 15's dyld refuses to load any Mach-O binary carrying duplicate
+`LC_RPATH` entries.** Not "skips the duplicate" — it fails the load
+outright, *even when handed the file's absolute path*. Older dyld
+tolerated it, which is why an installation that worked before an OS
+upgrade stops working after one.
+
+Several conda-forge builds carry `@loader_path` twice, or a path alongside
+the same path with a trailing slash — textually distinct, semantically
+identical. In this installation **368 Mach-O files** were affected.
+
+`libgfortran.5.dylib` had three rpath entries and could not be loaded at
+all. That broke openblas → numpy → scipy → matplotlib → gnuradio →
+gr-sdrplay3. **One root cause presenting as a pile of unrelated failures.**
+
+---
+
+## 2. Why the symptoms mislead
+
+This is the part worth reading. Three separate "diagnoses" were wrong, and
+each was wrong because a message said something other than what was
+happening.
+
+**dyld reports a *search* failure.** It reads as "library not found" when
+the file is sitting right there:
 
 ```
-$ ~/radioconda/bin/python -c "import numpy"
-ImportError: Error importing numpy: you should not try to import numpy from
-        its source directory; ...
+Library not loaded: @rpath/libgfortran.5.dylib
+  Reason: tried: '.../lib/libgfortran.5.dylib' (duplicate LC_RPATH '@loader_path')
 ```
 
-The message is misleading — it is raised from radioconda's own
-`site-packages`, not from a source tree, and it reproduces from any working
-directory. scipy and matplotlib fail with the same error, since they import
-numpy. **Consequence:** nothing in `morse_code_recorder` or in this repo's
-GNU Radio backend can import in radioconda as it stands.
+`(duplicate LC_RPATH …)` is the actual reason and is easy to read past as
+noise about search paths.
 
-Proposed fix — reinstall numpy into that environment:
+**numpy wraps it in a misleading message.** You get *"you should not try to
+import numpy from its source directory"* when you are nowhere near a source
+tree. That sent the first investigation toward reinstalling numpy, which
+would not have helped — numpy was never the problem.
+
+**A missing symlink was blamed, and the symlink already existed.**
+`gnuradio.sdrplay3` failed with what looked like an inability to find
+`libsdrplay_api.so.3`. The symlink into `~/radioconda/lib` was already
+present. dyld was refusing the load for the same duplicate-rpath reason.
+
+### Get the real error before theorising
 
 ```bash
-~/radioconda/bin/conda install -y --force-reinstall -c conda-forge numpy scipy
+cd /tmp && python -c "import traceback
+try: import numpy
+except Exception: traceback.print_exc()"
 ```
 
-Verify from a directory that is not a source tree:
+The chained exception names the actual library and the actual reason. Read
+it before changing anything.
+
+---
+
+## 3. The fix
 
 ```bash
-cd /tmp && ~/radioconda/bin/python -c "import numpy, scipy; print(numpy.__version__, scipy.__version__)"
+python3 tools/fix_macos_rpaths.py ~/radioconda                    # dry run
+python3 tools/fix_macos_rpaths.py ~/radioconda --apply -o log.json
 ```
 
-### 2. gnuradio.sdrplay3 cannot find the SDRplay API
+Removes duplicate rpath entries, keeping one of each distinct value, and
+re-signs each edited file ad-hoc — editing invalidates the existing
+signature and an unsigned arm64 dylib will not load.
 
-```
-ImportError: dlopen(.../gnuradio/sdrplay3/sdrplay3_python...so):
-  Library not loaded: @rpath/libsdrplay_api.so.3
-  tried: '/Users/<you>/radioconda/lib/libsdrplay_api.so.3' (no such file)
-```
+**Reversible.** `log.json` records every deletion;
+`install_name_tool -add_rpath "<path>" <file>` puts one back.
 
-The module's rpath is `~/radioconda/lib`. The API is installed at
-`/usr/local/lib/libsdrplay_api.so.3`, which resolves through two symlinks to
-`/Library/SDRplayAPI/3.15.1/lib/libsdrplay_api.so.3.15`. The two just never
-meet. `~/radioconda/lib` is user-writable, so:
-
-```bash
-ln -s /usr/local/lib/libsdrplay_api.so.3 ~/radioconda/lib/libsdrplay_api.so.3
-```
+**Patching beats reinstalling here.** The duplicates are baked into the
+packages as built, so a fresh radioconda would most likely reproduce them.
 
 Verify:
 
 ```bash
-cd /tmp && ~/radioconda/bin/python -c "from gnuradio import sdrplay3; print('sdrplay3 OK')"
+cd /tmp && ~/radioconda/bin/python -c "import numpy, scipy; from gnuradio import gr, sdrplay3; print('OK', gr.version())"
 ```
 
-### 3. SoapySDR's SDRplay module is built against the wrong API version
+### Two traps in doing this by hand
 
-```
-$ SoapySDRUtil --info
-Module found: /usr/local/lib/SoapySDR/modules0.8/libsdrPlaySupport.so
-  dlopen() failed: Library not loaded: libsdrplay_api.so.3.07
-Available factories... No factories found!
-```
-
-That module wants API **3.07**; the system has **3.15**. This is a version
-mismatch, not a path problem, so **a symlink is the wrong fix here** — it
-would load a 3.15 library into a module compiled against a 3.07 ABI. It
-needs `SoapySDRPlay3` rebuilt against the installed API.
-
-Not worth fixing unless SoapySDR is wanted for its own sake: the
-`gnuradio` route above and the `rtl_sdr` route both bypass it. The
-`SoapySDR` **Python** module is not installed either.
+- `install_name_tool -delete_rpath` prints warnings to stderr while
+  succeeding, and the exit status of a *pipeline* is the last command's.
+  Check the file afterwards with `otool -l`, not the exit code. The script
+  re-reads each file to confirm.
+- Conda's package cache under `~/radioconda/pkgs/` contains extracted
+  tarballs that are never on a load path. Fixing them is harmless but
+  pointless; the script skips them unless `--include-pkgs` is given.
 
 ---
 
-## What works today, with no repair at all
+## 4. What was NOT the problem
 
-| path | state |
+Recorded because each cost time:
+
+| suspected | actual |
 |---|---|
-| `--backend synthetic` | works now, no hardware |
-| `--backend rtl_sdr` | works now; `/opt/local/bin/rtl_sdr` is present |
-| `--backend rtl_power` | works now; `/opt/local/bin/rtl_power` is present |
-| `--backend gnuradio` (RSPdx) | needs fixes 1 and 2 |
+| numpy install corrupt | numpy was fine; openblas could not load libgfortran |
+| `gr-sdrplay3` needs a symlink | it already existed; dyld refused the load |
+| architecture mismatch | none — all arm64, API is a universal binary |
+| SDRplay API version mismatch | `gr-sdrplay3` wants the generic `libsdrplay_api.so.3` soname, satisfied by 3.15.1 |
+| `DYLD_LIBRARY_PATH` pollution | present (a JavaVM path) and cosmetic — the failure reproduced under `env -i` |
 
-So the survey can start on an RTL-SDR while the RSPdx path is repaired, and
-the datasets merge afterwards — that is what the format is for. The RSPdx is
-the better receiver for this job (12-bit rather than 8-bit, so a strong local
-carrier does not push the rest of a tuning toward the noise floor), which is
-why it is worth repairing rather than working around.
+The SoapySDR SDRplay module **is** genuinely version-mismatched — built
+against API `3.07` against an installed `3.15`, so `SoapySDRUtil` reports
+"No factories found". It is not needed for the `gnuradio` backend and can
+be ignored.
 
 ---
 
-## First acquisition commands, for the operator to run
+## 5. Still outstanding, and why it does not matter
 
-A dry run that touches no hardware and writes a real dataset:
-
-```bash
-cd ~/Code/occupancy-survey && python -m occupancy_survey --config config.yaml --backend synthetic --cycles 3
-```
-
-Then, after the two repairs above, a short RSPdx run on the control band
-only — broadcast FM, where the right answer is known in advance:
+About **145 Qt plugin and QML files** still carry duplicate rpaths. They
+are not on the survey's load path, which is why everything above passes.
+They would matter for GNU Radio Companion or any Qt GUI. To clear them:
 
 ```bash
-cd ~/Code/occupancy-survey && python -m occupancy_survey --config config.yaml --backend gnuradio --bands bcast_fm --duration 300
+python3 tools/fix_macos_rpaths.py ~/radioconda --apply -o log.json
 ```
 
-If that run's `control_check` verdict is not `pass`, stop and find out why
-before collecting any target data: either no FM station is receivable at
-this QTH, or the gain, the antenna or the threshold is wrong. Every target
-number from a run whose control failed inherits the same fault.
+The script is idempotent and makes several passes, so re-running is safe.
 
-(NOAA Weather Radio was the control until 2026-10-28 and is now a
-measurement target — its carrier continuity is not established. See
-[nwr-measurement.md](nwr-measurement.md).)
+---
+
+## 6. Diagnostics worth running before blaming the toolchain
+
+```bash
+# Is the API service running? macOS needs it.
+ps aux | grep -i sdrplay_apiService
+
+# Architectures must agree.
+file ~/radioconda/bin/python3.12
+file /Library/SDRplayAPI/*/lib/libsdrplay_api.so.*
+
+# What soname does gr-sdrplay3 actually want?
+otool -L ~/radioconda/lib/python3.12/site-packages/gnuradio/sdrplay3/*.so | grep sdrplay_api
+
+# Does a specific library load on its own?
+python -c "import ctypes; ctypes.CDLL('/full/path/to/lib.dylib')"
+```
+
+That last one is the most useful single test: it isolates one library from
+the import chain and gives dyld's unfiltered reason.
+
+---
+
+## 7. Next step
+
+`--check` passes. The untested part is the radio itself:
+
+```bash
+occupancy-survey --config config.yaml --check --device
+```
+
+That opens the receiver and takes one sweep. See
+[survey-host-bringup.md](survey-host-bringup.md).

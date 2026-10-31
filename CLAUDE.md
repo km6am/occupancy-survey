@@ -121,6 +121,16 @@ and then measured:
 
 Derivations have held up; estimates of "how much better" have not.
 
+## If the toolchain breaks on macOS
+
+`docs/rspdx-on-macos.md` is a confirmed repair runbook, with
+`tools/fix_macos_rpaths.py`. The short version: macOS 15's dyld refuses to
+load any Mach-O with duplicate `LC_RPATH` entries, several conda-forge
+builds have them, and **every symptom points somewhere other than the
+cause** — numpy reports a source-directory error it has no business
+reporting, and dyld reports a search failure for a file that is present.
+Get the chained traceback before changing anything.
+
 ## Architecture
 
 ```
