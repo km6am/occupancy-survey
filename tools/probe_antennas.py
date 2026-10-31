@@ -48,6 +48,23 @@ PEAK_THRESHOLD_DB = 10.0
 # known-dead port -- the number to revisit first if this tool misjudges.
 STRUCTURE_MIN_EXCESS_DB = 8.0
 
+# Above this clip fraction the port's spectrum cannot be assessed at all.
+# Matches the threshold the device preflight uses.
+#
+# WHY THIS GATE EXISTS, learned the hard way: a SATURATED port looks exactly
+# like an UNTERMINATED one by peak excess. Both are flat. The first run of
+# this tool against a real antenna reported "unterminated, or it does not
+# cover this frequency" for a port that was in fact being flattened by
+# broadcast FM at 3.8% clipping -- and printed the contradicting clip figure
+# on the very next line. The two diagnoses have OPPOSITE remedies (connect
+# something vs. reduce gain), so guessing between them is worse than
+# refusing to.
+SATURATION_CLIP_FRACTION = 1e-4
+
+
+def _structure_cell(value) -> str:
+    return {True: "yes", False: "NO", None: "SATURATED"}[value]
+
 
 def describe(spectra: list[np.ndarray], clips: list[float]) -> dict:
     """Reduce a port's sweeps to the few numbers that discriminate."""
@@ -61,17 +78,32 @@ def describe(spectra: list[np.ndarray], clips: list[float]) -> dict:
     p999 = float(np.percentile(per_bin, 99.9))
     n_peaks = int(np.count_nonzero(per_bin > floor + PEAK_THRESHOLD_DB))
     clip_vals = [c for c in clips if c is not None]
+    clip_max = max(clip_vals) if clip_vals else None
+    saturated = clip_max is not None and clip_max > SATURATION_CLIP_FRACTION
+    excess = p999 - floor
     return {
         "sweeps": len(spectra),
         "floor_db": floor,
         "p99_9_db": p999,
         # The discriminator. An unterminated port is FLAT: its floor can sit
         # anywhere, but nothing sticks out of it.
-        "peak_excess_db": p999 - floor,
+        "peak_excess_db": excess,
         "bins_above_floor": n_peaks,
         "bins": int(per_bin.size),
-        "clip_fraction_max": (max(clip_vals) if clip_vals else None),
-        "sees_structure": (p999 - floor) >= STRUCTURE_MIN_EXCESS_DB,
+        "clip_fraction_max": clip_max,
+        "saturated": saturated,
+        # TRI-STATE, and the None matters: a saturated front end is flat for
+        # a reason that has nothing to do with what is connected, so the
+        # honest answer is "cannot tell", not "no".
+        #
+        # Note the order. Saturation gates only the NEGATIVE answer, because
+        # it is only the negative answer that saturation can counterfeit.
+        # Structure that survives a clipping front end is still structure:
+        # the port is demonstrably connected, even though every level on it
+        # is suspect. Gating the positive answer too would have thrown away
+        # a conclusion the data fully supports.
+        "sees_structure": (True if excess >= STRUCTURE_MIN_EXCESS_DB
+                           else (None if saturated else False)),
     }
 
 
@@ -109,7 +141,7 @@ def report(rows) -> None:
               f"{r['floor_db']:8.1f} {r['peak_excess_db']:12.1f} "
               f"{r['bins_above_floor']:8d} "
               f"{('n/a' if clip is None else f'{clip:.1e}'):>9}  "
-              f"{'yes' if r['sees_structure'] else 'NO'}")
+              f"{_structure_cell(r['sees_structure'])}")
         if r.get("warning"):
             print(f"{'':12}  !! {r['warning']}")
 
@@ -119,10 +151,19 @@ def report(rows) -> None:
         by_freq.setdefault(r["freq_hz"], []).append(r)
 
     for hz, group in sorted(by_freq.items()):
-        usable = [r for r in group if r.get("sees_structure")]
+        usable = [r for r in group if r.get("sees_structure") is True]
         dead = [r for r in group if r.get("sweeps") and
-                not r.get("sees_structure")]
+                r.get("sees_structure") is False]
+        blind = [r for r in group if r.get("sees_structure") is None
+                 and r.get("sweeps")]
         print(f"{hz/1e6:.3f} MHz:")
+        for r in blind:
+            print(f"  {r['port_reported']}: SATURATED "
+                  f"(clip {r['clip_fraction_max']:.1e}, floor "
+                  f"{r['floor_db']:.1f} dB) -- flat because the front end is "
+                  f"compressed, NOT because nothing is connected. Fit the "
+                  f"band's bandpass, enable the notches, then reduce gain -- "
+                  f"in that order. Re-probe before judging this port.")
         if not usable:
             print("  no port showed structure. Either nothing is connected, "
                   "or this band really is quiet -- this tool cannot tell "
@@ -138,11 +179,13 @@ def report(rows) -> None:
             print(f"  {r['port_reported']}: flat "
                   f"({r['peak_excess_db']:.1f} dB excess) -- unterminated, "
                   f"or it does not cover this frequency.")
-        hot = [r for r in group if (r.get("clip_fraction_max") or 0.0) > 1e-4]
-        for r in hot:
-            print(f"  {r['port_reported']}: clipping "
-                  f"({r['clip_fraction_max']:.1e}). Fit the band's bandpass, "
-                  f"enable the notches, then reduce gain -- in that order.")
+        for r in group:
+            # Clipping while still resolving structure: the levels are
+            # already suspect even though the port is clearly alive.
+            if r.get("saturated") and r.get("sees_structure") is not None:
+                print(f"  {r['port_reported']}: clipping "
+                      f"({r['clip_fraction_max']:.1e}) -- every level on "
+                      f"this port is suspect until the gain is fixed.")
         print()
 
 

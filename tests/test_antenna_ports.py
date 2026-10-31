@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.probe_antennas import (describe, STRUCTURE_MIN_EXCESS_DB,
-                                  PEAK_THRESHOLD_DB)
+                                  PEAK_THRESHOLD_DB,
+                                  SATURATION_CLIP_FRACTION)
 
 RNG = np.random.default_rng(20261101)
 
@@ -99,6 +100,53 @@ class TestBackendDefaults(unittest.TestCase):
     def test_the_base_class_declares_both(self):
         for name in ("antenna_ports", "set_antenna_port"):
             self.assertTrue(callable(getattr(Backend, name, None)), name)
+
+
+class TestSaturationIsNotAbsence(unittest.TestCase):
+    """A saturated port and an unterminated port are both FLAT.
+
+    Measured case, from the first run against a real antenna: Antenna A at
+    98 MHz read floor +31.1 dB, peak excess 5.2 dB, 0 bins above floor, clip
+    3.8e-02. Forty dB above the other two ports and perfectly flat -- the
+    broadcast-FM band compressing the front end, not a disconnected cable.
+    The tool called it unterminated.
+    """
+
+    def _saturated(self):
+        # Flat and clipping: the shape of a compressed front end.
+        return describe(_flat(floor=31.1), [3.8e-2] * 4)
+
+    def test_a_saturated_port_is_not_called_unterminated(self):
+        self.assertIsNone(self._saturated()["sees_structure"],
+                          "a clipping port must read as indeterminate, not "
+                          "as showing no structure")
+
+    def test_a_saturated_port_is_flagged_saturated(self):
+        self.assertTrue(self._saturated()["saturated"])
+
+    def test_an_unterminated_port_is_still_a_definite_no(self):
+        """The gate must not swallow the case the tool exists for."""
+        d = describe(_flat(), [0.0] * 4)
+        self.assertIs(d["sees_structure"], False)
+        self.assertFalse(d["saturated"])
+
+    def test_a_live_port_that_clips_still_reads_as_live(self):
+        """Clipping does not erase structure that is plainly there."""
+        d = describe(_with_carriers(), [1e-3] * 4)
+        self.assertIs(d["sees_structure"], True)
+        self.assertTrue(d["saturated"],
+                        "levels on a clipping port are still suspect")
+
+    def test_clipping_just_under_the_gate_does_not_trip_it(self):
+        d = describe(_flat(), [SATURATION_CLIP_FRACTION] * 4)
+        self.assertFalse(d["saturated"])
+        self.assertIs(d["sees_structure"], False)
+
+    def test_missing_clip_data_cannot_claim_saturation(self):
+        """A backend that cannot measure clipping must not be presumed sick."""
+        d = describe(_flat(), [None] * 4)
+        self.assertFalse(d["saturated"])
+        self.assertIs(d["sees_structure"], False)
 
 
 if __name__ == "__main__":
