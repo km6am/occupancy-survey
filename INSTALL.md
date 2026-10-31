@@ -116,20 +116,43 @@ environment.
 
 ### 4a. Install GNU Radio
 
-**[radioconda](https://github.com/ryanvolz/radioconda/releases)** is the
-easiest route on all three platforms and bundles `gr-sdrplay3`, SoapySDR
-and UHD. Download the installer for your platform and run it.
-
-Distribution packages also work:
+**Prefer a direct install over radioconda where you have the choice.** In
+this project's experience radioconda has been the less reliable of the two
+on real machines — see the caveat below — while a distribution package
+plus a locally built `gr-sdrplay3` has behaved better.
 
 | platform | command |
 |---|---|
-| Debian / Ubuntu | `sudo apt install gnuradio` |
-| Fedora | `sudo dnf install gnuradio` |
-| macOS (Homebrew) | `brew install gnuradio` |
+| Debian / Ubuntu | `sudo apt install gnuradio gnuradio-dev cmake build-essential` |
+| Fedora | `sudo dnf install gnuradio gnuradio-devel cmake` |
+| macOS (Homebrew) | `brew install gnuradio cmake` |
 
-Distribution packages usually do **not** include `gr-sdrplay3`, which is
-needed for SDRplay hardware specifically.
+**The tradeoff is real and worth stating.** Distribution packages do *not*
+ship `gr-sdrplay3`, which SDRplay hardware needs, so you build it:
+
+```bash
+git clone https://github.com/fventuri/gr-sdrplay3
+cd gr-sdrplay3 && mkdir build && cd build
+cmake .. && make -j && sudo make install
+```
+
+That needs the SDRplay API installed first (§4b) and matching GNU Radio
+headers. It is more steps than radioconda, and it is the route that has
+worked better.
+
+**[radioconda](https://github.com/ryanvolz/radioconda/releases)** bundles
+`gr-sdrplay3`, SoapySDR and UHD in one installer, which is genuinely
+convenient when it works.
+
+> **radioconda caveat, measured not guessed.** On macOS 15 a radioconda
+> installation was entirely unusable: 368 of its Mach-O files carry
+> duplicate `LC_RPATH` entries, which that OS's dyld refuses to load.
+> numpy, scipy, matplotlib, GNU Radio and `gr-sdrplay3` all failed from
+> that one cause, with symptoms that pointed everywhere else. It is
+> repairable — `tools/fix_macos_rpaths.py`, and
+> [docs/rspdx-on-macos.md](docs/rspdx-on-macos.md) is the runbook — but a
+> direct install avoids the whole class of problem, because the duplicates
+> come from conda packaging rather than from GNU Radio.
 
 ### 4b. Install the SDRplay API (SDRplay hardware only)
 

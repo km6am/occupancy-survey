@@ -20,6 +20,12 @@ datasets, and the analysis tools work end to end.
 and the GNU Radio path have been written and reviewed but never run against
 hardware. Treat every claim about them as untested.
 
+**Prefer a direct GNU Radio install over radioconda.** Distribution
+package plus a locally built `gr-sdrplay3` has been the more reliable
+route; radioconda bundles everything but brought its own problems on
+macOS 15 (see [rspdx-on-macos.md](rspdx-on-macos.md)). On Linux the
+distribution package is the obvious first choice.
+
 Specifically unknown on a new host:
 
 - whether GNU Radio and `gr-sdrplay3` import in that environment

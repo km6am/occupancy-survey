@@ -171,7 +171,23 @@ the import chain and gives dyld's unfiltered reason.
 
 ---
 
-## 7. Next step
+## 7. Consider not using radioconda
+
+This failure is a **conda packaging** problem, not a GNU Radio one. A
+direct install — distribution package, or Homebrew, plus `gr-sdrplay3`
+built from source — avoids the entire class, and has been the more
+reliable route on other machines. It costs a source build of
+`gr-sdrplay3`, which radioconda bundles. See INSTALL.md §4a.
+
+Worth knowing for context: this radioconda was installed on 2026-03-28,
+onto a macOS that had shipped the stricter dyld in 2024-09. **It was
+broken from the moment it was installed and had never worked on this
+machine** — there are no recordings or logs from the CW recorder here, and
+that project's documented working setup is a Windows one.
+
+---
+
+## 8. Next step
 
 `--check` passes. The untested part is the radio itself:
 
