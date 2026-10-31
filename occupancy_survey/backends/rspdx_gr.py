@@ -273,6 +273,10 @@ class GnuRadioBackend(Backend):
             meta["gain_units"] = ("SDRplay gain REDUCTION in dB; larger means "
                                  "less gain")
             meta["hdr_mode"] = getattr(cfg, "hdr_mode", False)
+            if self._running:
+                # Only meaningful once streaming: before that the API has
+                # had no traffic to overload on.
+                meta["gain_in_effect"] = self.gain_in_effect()
         else:
             meta["gain"] = getattr(cfg, "gain", None)
             meta["gain_units"] = "device gain, dB"
@@ -319,6 +323,80 @@ class GnuRadioBackend(Backend):
             f"{type(self._source).__name__} exposes no retune method; a "
             f"multi-step band cannot be surveyed with this device."
         )
+
+    # Tolerance for calling a gain stage unchanged. SDRplay gain steps are
+    # whole dB, so anything at or under half a step is reporting noise.
+    GAIN_LOCK_TOLERANCE_DB = 0.5
+
+    def gain_in_effect(self) -> dict:
+        """What the device says its gain is NOW, against what was configured.
+
+        WHY THIS EXISTS, and it is not a nicety. The SDRplay API corrects
+        overloads by itself and announces it on stderr as `overload
+        corrected`. This tool refuses AGC (see AgcRefused) because every
+        threshold in it is noise-floor-relative and a floor that moves
+        mid-run takes the occupancy figure with it. But refusing the AGC
+        *setting* is not the same as having fixed gain: if the API's own
+        overload correction moves a gain stage, the gain is not fixed, the
+        noise floor is not stable, and the gain recorded in the dataset is
+        a fiction.
+
+        Three runs on an RSPdx printed `overload corrected` while the clip
+        counter read exactly 0.0e+00, which says the correction happens
+        upstream of the samples we receive. That is consistent with the API
+        reducing gain before anything clips -- the case this method exists
+        to catch -- and also with an analog power detector tripping below
+        digital full scale and nothing changing at all. Those are different
+        worlds for this project and the gain readback distinguishes them.
+
+        Returns `queryable: False` rather than a guess on a device that
+        cannot be asked.
+        """
+        get_gain = getattr(self._source, "get_gain", None)
+        if get_gain is None:
+            return {"queryable": False,
+                    "note": "this device exposes no gain readback; whether "
+                            "gain held cannot be checked"}
+
+        cfg = self._config
+        if getattr(cfg, "device_type", "").lower() == "rspdx":
+            # Set as a negated REDUCTION, so read back the same way.
+            want = {"IF": -float(cfg.if_gain_reduction_db),
+                    "RF": -float(cfg.rf_gain_reduction_db)}
+        else:
+            want = {"": float(getattr(cfg, "gain", 0.0))}
+
+        stages, worst = {}, 0.0
+        for name, configured in want.items():
+            try:
+                actual = float(get_gain(name) if name else get_gain())
+            except Exception as e:                       # pragma: no cover
+                stages[name or "gain"] = {"configured_db": configured,
+                                          "error": str(e)[:80]}
+                continue
+            drift = actual - configured
+            worst = max(worst, abs(drift))
+            stages[name or "gain"] = {"configured_db": configured,
+                                      "actual_db": actual,
+                                      "drift_db": drift}
+
+        out = {"queryable": True, "stages": stages,
+               "worst_drift_db": worst,
+               "tolerance_db": self.GAIN_LOCK_TOLERANCE_DB}
+
+        mode = getattr(self._source, "get_gain_mode", None)
+        if mode is not None:
+            try:
+                # True means automatic on this driver, which must never be
+                # the case here -- create_source() sets it False.
+                out["agc_mode"] = bool(mode())
+            except Exception:                            # pragma: no cover
+                pass
+
+        out["locked"] = (worst <= self.GAIN_LOCK_TOLERANCE_DB
+                         and not out.get("agc_mode", False)
+                         and not any("error" in s for s in stages.values()))
+        return out
 
     def antenna_ports(self) -> list[str]:
         """Antenna ports this device reports, straight from the hardware.
