@@ -12,7 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.probe_antennas import (describe, STRUCTURE_MIN_EXCESS_DB,
                                   PEAK_THRESHOLD_DB,
-                                  SATURATION_CLIP_FRACTION)
+                                  SATURATION_CLIP_FRACTION,
+                                  port_verdicts, FLAT_FLOOR_SPREAD_DB,
+                                  MIN_FREQ_RATIO_FOR_SPREAD)
 
 RNG = np.random.default_rng(20261101)
 
@@ -147,6 +149,86 @@ class TestSaturationIsNotAbsence(unittest.TestCase):
         d = describe(_flat(), [None] * 4)
         self.assertFalse(d["saturated"])
         self.assertIs(d["sees_structure"], False)
+
+
+def _row(freq_hz, port, floor, excess=12.0, clip=0.0):
+    """A probe row with the fields port_verdicts() reads."""
+    return {"freq_hz": freq_hz, "port_requested": port,
+            "port_reported": port, "sweeps": 4, "floor_db": floor,
+            "p99_9_db": floor + excess, "peak_excess_db": excess,
+            "bins_above_floor": 10, "bins": 2048,
+            "clip_fraction_max": clip,
+            "saturated": clip > SATURATION_CLIP_FRACTION,
+            "sees_structure": True}
+
+
+# The two runs this threshold was calibrated on, at 162.475 and 465 MHz.
+MEASURED = [
+    _row(162.475e6, "Antenna A", -3.7, 45.4),
+    _row(162.475e6, "Antenna B", -11.2, 11.2),
+    _row(162.475e6, "Antenna C", -14.2, 15.1),
+    _row(465.0e6, "Antenna A", -13.6, 43.2),
+    _row(465.0e6, "Antenna B", -12.0, 17.7),
+    _row(465.0e6, "Antenna C", -14.3, 12.2),
+]
+
+
+class TestFloorSpreadFindsTheAntenna(unittest.TestCase):
+    """The discriminator peak excess could not provide.
+
+    All three ports showed 11-45 dB of peak excess and read "structure".
+    Only the floor across frequency separated the connected port, because
+    an open connector picks up strong local signals perfectly well.
+    """
+
+    def test_the_connected_port_is_identified(self):
+        v = port_verdicts(MEASURED)
+        self.assertTrue(v["Antenna A"]["likely_connected"])
+        self.assertFalse(v["Antenna B"]["likely_connected"])
+        self.assertFalse(v["Antenna C"]["likely_connected"])
+
+    def test_peak_excess_alone_would_not_have(self):
+        """Documents why this test exists: every port passes that one."""
+        for r in MEASURED:
+            self.assertTrue(r["peak_excess_db"] >= STRUCTURE_MIN_EXCESS_DB,
+                            "the measured case has all ports showing "
+                            "structure; that is the point")
+
+    def test_the_measured_spreads_sit_either_side_with_margin(self):
+        v = port_verdicts(MEASURED)
+        self.assertGreater(v["Antenna A"]["floor_spread_db"],
+                           FLAT_FLOOR_SPREAD_DB * 2.0)
+        for open_port in ("Antenna B", "Antenna C"):
+            self.assertLess(v[open_port]["floor_spread_db"],
+                            FLAT_FLOOR_SPREAD_DB / 2.0)
+
+    def test_a_narrow_span_refuses_to_judge(self):
+        """153 vs 162 MHz is no lever arm; a real antenna is flat there too."""
+        narrow = [_row(153.4e6, "Antenna A", -3.7),
+                  _row(162.475e6, "Antenna A", -3.9)]
+        self.assertEqual(port_verdicts(narrow), {},
+                         "a 1.06x span must not produce a verdict")
+
+    def test_one_frequency_refuses_to_judge(self):
+        self.assertEqual(port_verdicts([_row(162.475e6, "Antenna A", -3.7)]),
+                         {})
+
+    def test_the_minimum_ratio_is_a_real_lever(self):
+        self.assertGreater(MIN_FREQ_RATIO_FOR_SPREAD, 1.0)
+
+    def test_saturated_rows_are_excluded_from_the_spread(self):
+        """A compressed floor is a gain artefact, not a noise floor.
+
+        Antenna A at 98 MHz read +31.1 dB while clipping. Folding that into
+        the spread would invent 45 dB of frequency dependence out of the
+        overload and call an open port connected.
+        """
+        rows = [_row(98.0e6, "Antenna B", 31.1, 5.2, clip=3.8e-2),
+                _row(162.475e6, "Antenna B", -11.2),
+                _row(465.0e6, "Antenna B", -12.0)]
+        v = port_verdicts(rows)
+        self.assertFalse(v["Antenna B"]["likely_connected"])
+        self.assertEqual(v["Antenna B"]["n_frequencies"], 2)
 
 
 if __name__ == "__main__":
