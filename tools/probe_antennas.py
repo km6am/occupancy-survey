@@ -7,15 +7,26 @@ true of a port that cannot reach the frequency being surveyed. This tool
 turns that silent failure into a loud one by comparing the ports against
 each other at the frequencies actually being surveyed.
 
-WHAT IT CAN CONCLUDE. That one port sees structure and another does not, at
-a given frequency, right now. That is enough to catch an unplugged cable, a
-port that does not cover the band, and a switch that is being ignored.
+WHAT IT CAN CONCLUDE. Given two probe frequencies far enough apart, which
+port has an antenna on it: a connected port's noise floor falls with
+frequency and an open port's does not. Given one frequency, only the weaker
+statement that a port sees structure -- which an open connector in a strong
+signal environment does too, so do not probe one frequency and expect an
+answer about cabling.
 
 WHAT IT CANNOT CONCLUDE. Which port is BEST -- that needs a known reference,
 which a port comparison does not have. Nor can it distinguish a good antenna
 on a lossy cable from a poor antenna on a good one, and it cannot certify a
 quiet port as faulty: a genuinely quiet band looks the same. It ranks; it
 does not certify.
+
+It also cannot tell you a port's FREQUENCY COVERAGE, and the reason is worth
+stating because the output invites the mistake. What the floor reading
+measures on an open port is the receiver's own noise, generated downstream of
+the antenna switch -- so it reads the same whether that port has a
+brick-wall filter on it or nothing at all. An RSPdx Port C that is widely
+understood to stop below ~200 MHz looked identical at 162 and 465 MHz here,
+which is not evidence either way. Only an antenna on the port settles it.
 
 WHY IT DOES NOT PICK FOR YOU. A survey's antenna port belongs in the config
 and in the dataset's receiver metadata, where it is recorded once and stays
@@ -60,6 +71,37 @@ STRUCTURE_MIN_EXCESS_DB = 8.0
 # something vs. reduce gain), so guessing between them is worse than
 # refusing to.
 SATURATION_CLIP_FRACTION = 1e-4
+
+# --------------------------------------------------------------------------- #
+# The discriminator that actually answers "which port has the antenna"
+# --------------------------------------------------------------------------- #
+# Peak excess, above, answers a narrower question than it looks like it does.
+# At one QTH all three ports showed 11-15 dB of excess at 162 MHz and read
+# "structure" -- correct, and useless, because an open connector picks up
+# strong local signals perfectly well.
+#
+# What separated them was the NOISE FLOOR ACROSS FREQUENCY. External noise
+# falls steeply from VHF to UHF; the receiver's own floor does not move. So
+# a port whose floor is the same at 162 MHz and 465 MHz is listening to the
+# receiver, and a port whose floor drops 10 dB over that span is listening
+# to the world.
+#
+# Measured at one site, two runs, one antenna:
+#     A  -3.7 -> -13.6 dB   spread 9.9 dB    (feedline attached)
+#     B  -11.2 -> -12.0 dB  spread 0.8 dB    (open)
+#     C  -14.2 -> -14.3 dB  spread 0.1 dB    (open)
+# Floors reproduced within 0.6 dB between runs, so the spread is signal and
+# not scatter.
+#
+# THRESHOLD CALIBRATED ON n=1 SITE. The gap it sits in is wide (0.8 vs 9.9)
+# but one QTH is one QTH: a quiet rural site, or a port feeding a narrowband
+# filtered antenna, could compress a real port's spread toward this bound.
+# Revisit this constant before trusting it anywhere else.
+FLAT_FLOOR_SPREAD_DB = 3.0
+
+# The spread test is meaningless over a narrow span -- a real antenna's floor
+# barely moves between 153 and 162 MHz either. Needs a genuine lever arm.
+MIN_FREQ_RATIO_FOR_SPREAD = 1.5
 
 
 def _structure_cell(value) -> str:
@@ -189,6 +231,77 @@ def report(rows) -> None:
         print()
 
 
+
+def port_verdicts(rows) -> dict:
+    """Per-port judgement across frequencies: is anything connected?
+
+    Returns {} when the probed frequencies are too close together to tell,
+    rather than returning a confident answer from no lever arm.
+    """
+    freqs = sorted({r["freq_hz"] for r in rows if r.get("sweeps")})
+    if len(freqs) < 2 or freqs[0] <= 0:
+        return {}
+    ratio = freqs[-1] / freqs[0]
+    if ratio < MIN_FREQ_RATIO_FOR_SPREAD:
+        return {}
+
+    out = {}
+    for r in rows:
+        if not r.get("sweeps") or r.get("saturated"):
+            # A saturated row's floor is a gain artefact, not a noise floor;
+            # including it would invent a spread out of the compression.
+            continue
+        out.setdefault(r["port_reported"], []).append(r)
+
+    verdicts = {}
+    for port, group in out.items():
+        floors = [r["floor_db"] for r in group]
+        if len(floors) < 2:
+            continue
+        spread = max(floors) - min(floors)
+        verdicts[port] = {
+            "floor_spread_db": spread,
+            "floor_min_db": min(floors),
+            "floor_max_db": max(floors),
+            "freq_ratio": ratio,
+            "n_frequencies": len(floors),
+            "likely_connected": spread >= FLAT_FLOOR_SPREAD_DB,
+        }
+    return verdicts
+
+
+def report_ports(verdicts, configured) -> None:
+    if not verdicts:
+        print("port verdict: not attempted -- needs two probe frequencies at "
+              f"least {MIN_FREQ_RATIO_FOR_SPREAD:g}x apart. Re-run with e.g. "
+              "--freq-mhz 162.475 --freq-mhz 465")
+        return
+
+    print("port verdict, from noise floor across frequency:")
+    connected = [p for p, v in verdicts.items() if v["likely_connected"]]
+    for port, v in sorted(verdicts.items()):
+        verdict = ("probably CONNECTED" if v["likely_connected"]
+                   else "probably OPEN (receiver noise only)")
+        print(f"  {port:<12} floor {v['floor_max_db']:6.1f} -> "
+              f"{v['floor_min_db']:6.1f} dB, spread "
+              f"{v['floor_spread_db']:5.1f} dB over {v['freq_ratio']:.1f}x "
+              f"-- {verdict}")
+    print("  Reasoning: external noise falls steeply with frequency; the "
+          "receiver's own floor does not. A flat floor is the receiver "
+          "listening to itself.")
+    print(f"  Inferred, not certified, and the {FLAT_FLOOR_SPREAD_DB:g} dB "
+          f"bound is calibrated on one site. A lossy or narrowband-filtered "
+          f"feedline could flatten a real port too.")
+
+    if len(connected) == 1 and connected[0] != configured:
+        print(f"\n  !! config is set to {configured}, but {connected[0]} is "
+              f"the one that looks connected. Nothing here changes your "
+              f"config; check the cabling and edit antenna_port yourself.")
+    elif configured in verdicts and not verdicts[configured]["likely_connected"]:
+        print(f"\n  !! the configured port {configured} looks OPEN. A survey "
+              f"on it would report quiet bands that are not quiet.")
+    print()
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Compare antenna ports at the surveyed frequencies. "
@@ -227,6 +340,8 @@ def main(argv=None) -> int:
                      cfg.sampling.usable_bandwidth_hz, args.dwell)
 
     report(rows)
+    verdicts = port_verdicts(rows)
+    report_ports(verdicts, cfg.sdr.antenna_port)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps({
             "schema": "occupancy-survey/antenna-probe/1",
@@ -236,7 +351,9 @@ def main(argv=None) -> int:
             "caveat": "Ranks ports against each other at one moment. Cannot "
                       "identify the best antenna, and cannot distinguish a "
                       "dead port from a quiet band.",
+            "flat_floor_spread_db": FLAT_FLOOR_SPREAD_DB,
             "rows": rows,
+            "port_verdicts": verdicts,
         }, indent=1), encoding="utf-8")
         print(f"wrote {args.json_out}")
     return 0
