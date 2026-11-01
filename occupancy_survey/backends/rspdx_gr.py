@@ -556,9 +556,29 @@ class GnuRadioBackend(Backend):
             # SDRplay gain is a REDUCTION, so less gain is MORE reduction.
             self._source.set_gain(
                 -(cfg.if_gain_reduction_db - offset_db), "IF")
-            return True
         except Exception:                                # pragma: no cover
+            self._achieved_offset_db = None
             return False
+
+        # Verify the step landed where it was asked to. intermod.classify()
+        # DIVIDES by this number -- implied order is 1 + excess_drop / G --
+        # so a 6 dB request that the attenuator rounded to 4 would inflate
+        # every order by half and could push a real signal past the suspect
+        # bound. We learned the RSPdx quantises when a 20 dB RF request came
+        # back as 24.
+        base = (getattr(self, "_gain_accepted", None) or {}).get("IF")
+        now = self._read_gain_stages().get("IF")
+        self._achieved_offset_db = (
+            None if base is None or now is None else now - base)
+        return True
+
+    def achieved_gain_offset_db(self) -> float | None:
+        """The gain step the device actually took, or None if unmeasurable.
+
+        None means "use the requested value and say that you did", not
+        "assume it worked".
+        """
+        return getattr(self, "_achieved_offset_db", None)
 
     def sweeps(self, dwell_s: float):
         self._start()
