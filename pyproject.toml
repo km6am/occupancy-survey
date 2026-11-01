@@ -31,3 +31,10 @@ occupancy-survey = "occupancy_survey.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["occupancy_survey*"]
+
+# The vendored reference is DATA inside the package, so a wheel drops it
+# unless it is named here -- and dropping it turns every import of
+# occupancy_survey.reference into a FileNotFoundError at run time, on the
+# installed copy only. Tests run from the source tree and would not catch it.
+[tool.setuptools.package-data]
+occupancy_survey = ["reference/*.json"]

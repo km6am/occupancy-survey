@@ -1,0 +1,113 @@
+{
+ "schema": "occupancy-survey/vendored-duty-cycles/1",
+ "what": "Section 3 of duty_cycles.md, the table this survey exists to fill the 'measured' column of. Vendored so this repository needs no sibling checkout.",
+ "authority": "NOT authoritative. The authority is the source file below; this is a dated copy. Propose changes there.",
+ "source": {
+  "repo": "https://github.com/km6am/hp8935_sinad_serial",
+  "path": "docs/reference/duty_cycles.md",
+  "section": "3. The table",
+  "branch_read": "esg-e4436b",
+  "branch_commit": "9599bb6fa8d7140b7030daaf792494c51318380f",
+  "blob_sha1": "3d095865fa614d259b9f4e0851da4807f2075c5a",
+  "file_sha256": "dab793661215b233cd4437f420b77348d7fd1f7dcb0e7da0aaac0dc725378826",
+  "file_last_modified_commit": "0bc9443c502a95bfe1efe959c20c9489fd1c8b8e",
+  "file_last_modified_date": "2026-10-28",
+  "captured": "2026-11-01",
+  "caution": "This file does NOT exist on the source repo's `main` branch -- it lives only on feature branches, and the `testset` branch carries a version 114 lines shorter. So 'the latest duty_cycles.md' is not well defined; that is why the branch and blob are pinned here."
+ },
+ "evidential_status": "Nothing in this table is measured. Rows are marked standard, architectural, observed or estimated, per the source's own section 3 preamble.",
+ "table_header": "| Service | Duty cycle | Class | Basis |",
+ "rows": [
+  {
+   "service": "Broadcast FM (88\u2013108)",
+   "duty_cycle": "**100%**",
+   "class": "continuous",
+   "basis": "architectural \u2014 a carrier with programme on it",
+   "verbatim": "| Broadcast FM (88\u2013108) | **100%** | continuous | architectural \u2014 a carrier with programme on it |"
+  },
+  {
+   "service": "Broadcast TV (VHF/UHF)",
+   "duty_cycle": "**100%**",
+   "class": "continuous",
+   "basis": "architectural",
+   "verbatim": "| Broadcast TV (VHF/UHF) | **100%** | continuous | architectural |"
+  },
+  {
+   "service": "Broadcast AM",
+   "duty_cycle": "**100%**",
+   "class": "continuous",
+   "basis": "architectural",
+   "verbatim": "| Broadcast AM | **100%** | continuous | architectural |"
+  },
+  {
+   "service": "NOAA Weather Radio (162.4\u2013162.55)",
+   "duty_cycle": "**uncertain \u2014 see \u00a73.1**",
+   "class": "**disputed**",
+   "basis": "was \"architectural, 100%\"; an operator observation contradicts it",
+   "verbatim": "| NOAA Weather Radio (162.4\u2013162.55) | **uncertain \u2014 see \u00a73.1** | **disputed** | was \"architectural, 100%\"; an operator observation contradicts it |"
+  },
+  {
+   "service": "Microwave point-to-point (CF, MW, MG)",
+   "duty_cycle": "**100%**",
+   "class": "continuous",
+   "basis": "architectural \u2014 backhaul carries a carrier continuously",
+   "verbatim": "| Microwave point-to-point (CF, MW, MG) | **100%** | continuous | architectural \u2014 backhaul carries a carrier continuously |"
+  },
+  {
+   "service": "STL / TV intercity relay (TS, TI)",
+   "duty_cycle": "**~100%**",
+   "class": "continuous",
+   "basis": "architectural \u2014 up while the parent station is on air",
+   "verbatim": "| STL / TV intercity relay (TS, TI) | **~100%** | continuous | architectural \u2014 up while the parent station is on air |"
+  },
+  {
+   "service": "Cellular downlink",
+   "duty_cycle": "**~100%**",
+   "class": "continuous",
+   "basis": "architectural \u2014 reference/control signalling is always on",
+   "verbatim": "| Cellular downlink | **~100%** | continuous | architectural \u2014 reference/control signalling is always on |"
+  },
+  {
+   "service": "**Trunked LMR control channel (YW, YG, YK)**",
+   "duty_cycle": "**100%**",
+   "class": "**continuous**",
+   "basis": "architectural \u2014 dedicated carrier, see \u00a72",
+   "verbatim": "| **Trunked LMR control channel (YW, YG, YK)** | **100%** | **continuous** | architectural \u2014 dedicated carrier, see \u00a72 |"
+  },
+  {
+   "service": "Trunked LMR voice channels",
+   "duty_cycle": "low",
+   "class": "intermittent",
+   "basis": "estimated \u2014 traffic-dependent",
+   "verbatim": "| Trunked LMR voice channels | low | intermittent | estimated \u2014 traffic-dependent |"
+  },
+  {
+   "service": "Conventional LMR, base/mobile (PW, IG)",
+   "duty_cycle": "**20\u201325%**",
+   "class": "intermittent",
+   "basis": "**standard** \u2014 [TIA-603][tia603] intermittent test cycle: 4 min RX / 1 min TX for 8 h (20%), then 15 min RX / 5 min TX (25%)",
+   "verbatim": "| Conventional LMR, base/mobile (PW, IG) | **20\u201325%** | intermittent | **standard** \u2014 [TIA-603][tia603] intermittent test cycle: 4 min RX / 1 min TX for 8 h (20%), then 15 min RX / 5 min TX (25%) |"
+  },
+  {
+   "service": "Conventional LMR, portable",
+   "duty_cycle": "**10%**",
+   "class": "intermittent",
+   "basis": "**standard** \u2014 TIA-603 \"10-10-80\" cycle: 6 s TX, 6 s RX, 48 s idle",
+   "verbatim": "| Conventional LMR, portable | **10%** | intermittent | **standard** \u2014 TIA-603 \"10-10-80\" cycle: 6 s TX, 6 s RX, 48 s idle |"
+  },
+  {
+   "service": "Paging",
+   "duty_cycle": "high but **not 100%**",
+   "class": "intermittent, bursty",
+   "basis": "OET 65 assumed paging duty factors are \"high\" but \"would not normally be expected to be 100%\"",
+   "verbatim": "| Paging | high but **not 100%** | intermittent, bursty | OET 65 assumed paging duty factors are \"high\" but \"would not normally be expected to be 100%\" |"
+  },
+  {
+   "service": "Amateur repeater",
+   "duty_cycle": "low",
+   "class": "intermittent",
+   "basis": "estimated",
+   "verbatim": "| Amateur repeater | low | intermittent | estimated |"
+  }
+ ]
+}

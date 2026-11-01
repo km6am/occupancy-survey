@@ -255,10 +255,18 @@ same, and deliberately have different dependencies:
 | role | needs |
 |---|---|
 | **survey host** | numpy, PyYAML, a backend |
-| **analysis host** | the above, plus matplotlib, pandas and [`sota-rf`](https://github.com/) |
+| **analysis host** | the above, plus matplotlib and pandas |
+| **generating a fresh prediction** | plus a [`sota-rf`](https://github.com/km6am/sota-rf) checkout and its FCC cache |
 
 The survey host never needs a 400 MB FCC download: the channel list is a
 small JSON generated on the analysis host and copied across.
+
+Neither host needs a sibling checkout to *install or run* this repository.
+The duty-cycle reference table and sota-rf's data contracts are vendored in
+`occupancy_survey/reference/` with full provenance, and
+`tests/fixtures/prediction_sample.json` stands in for a real run, so the
+analysis tools are exercisable standalone. Only `tools/qth_predict.py`
+needs `sota-rf`, and only to produce a new prediction.
 
 ```bash
 pip install '.[plots]'

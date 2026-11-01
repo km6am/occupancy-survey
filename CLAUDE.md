@@ -37,7 +37,13 @@ These are not preferences. Violating one invalidates the data.
 - **Fixed gain for a whole campaign.** Gain is recorded per dataset and a
   campaign whose gain changed midway cannot be pooled across the change.
 - **`~/sota-rf` and `~/Code/hp8935_sinad_serial` are READ-ONLY.** Propose
-  changes; do not make them.
+  changes; do not make them. What this repo needs from them is vendored in
+  `occupancy_survey/reference/` so neither checkout is required to run
+  anything here. That copy is **not** the authority: it carries the source
+  branch, commit, blob and sha256, and `tools/revendor_reference.py`
+  re-extracts it. Never hand-edit the vendored JSON — a copy that no longer
+  matches its recorded hash is worse than no copy, because the drift check
+  then reports a change that was made here as a change made upstream.
 - **Do not open an SDR or serial port unprompted.** Propose the command,
   and make a SEPARATE explicit request for *each* prompt that will trigger
   the radio. Approval for one radio command never carries to the next, not
