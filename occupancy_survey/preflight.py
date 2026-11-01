@@ -267,13 +267,19 @@ def _check_overload_reports(pf: Preflight, backend) -> None:
                "the zero count means 'not observed', not 'none occurred'")
         return
 
-    n = o.get("overload_detected", 0)
+    # Episodes, not `detected` lines: the API reports an onset from inside
+    # its own startup, where no watcher can be listening, so a bare
+    # `corrected` still means an overload happened.
+    n = o.get("overload_events", 0)
     if not n:
-        pf.add("front-end overload", True, "none reported in this sweep")
+        pf.add("front-end overload", True, "none reported")
         return
 
-    pf.add("front-end overload", False,
-           f"the API reported overload {n} time(s)",
+    early = o.get("onset_before_watching", 0)
+    detail = f"the API reported overload {n} time(s)"
+    if early:
+        detail += f" ({early} beginning before the device was opened)"
+    pf.add("front-end overload", False, detail,
            "intermod from a compressed front end looks like carriers and "
            "RAISES occupancy. Back off RF gain, not IF: the IF attenuator "
            "is downstream of the stage that compresses. See docs/front-end.md")

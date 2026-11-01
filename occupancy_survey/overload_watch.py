@@ -171,6 +171,20 @@ class OverloadWatcher:
     def counts(self) -> dict:
         with self._lock:
             out = dict(self._counts)
+
+        # A `corrected` implies a `detected` that we may not have seen -- the
+        # API reports the onset from inside its own startup, before a watcher
+        # can be in place. So the episode count is the larger of the two, not
+        # the `detected` tally.
+        #
+        # This is not hypothetical: a run printed one `overload corrected`
+        # with no `detected`, and keying the verdict on `detected` alone put
+        # "none reported in this sweep" three lines under the warning.
+        detected = out.get("overload_detected", 0)
+        corrected = out.get("overload_corrected", 0)
+        out["overload_events"] = max(detected, corrected)
+        if corrected > detected:
+            out["onset_before_watching"] = corrected - detected
         out["supported"] = self._supported
         if not self._supported:                          # pragma: no cover
             out["note"] = ("this platform has no os.dup2; the API's overload "
@@ -181,7 +195,7 @@ class OverloadWatcher:
     def as_metadata(self) -> dict:
         """Dataset form, with the asymmetry spelled out for a later reader."""
         c = self.counts
-        detected = c.get("overload_detected", 0)
+        detected = c.get("overload_events", 0)
         out = {
             **c,
             "interpretation": (

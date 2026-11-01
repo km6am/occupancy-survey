@@ -112,17 +112,89 @@ class TestPreflightVerdict(unittest.TestCase):
         return {c.name: c for c in pf.checks}["front-end overload"]
 
     def test_overload_fails_and_names_the_right_knob(self):
-        c = self._check({"supported": True, "overload_detected": 9})
+        # Shape taken from OverloadWatcher.counts, not hand-rolled: a
+        # fixture that cannot occur in practice tests nothing, and an
+        # earlier version of this one passed while the code was broken.
+        c = self._check({"supported": True, "overload_detected": 9,
+                         "overload_corrected": 9, "overload_events": 9})
         self.assertFalse(c.ok)
         self.assertIn("9 time(s)", c.detail)
         self.assertIn("RF", c.remedy)
 
     def test_a_clean_sweep_passes(self):
         self.assertTrue(
-            self._check({"supported": True, "overload_detected": 0}).ok)
+            self._check({"supported": True, "overload_detected": 0,
+                         "overload_corrected": 0,
+                         "overload_events": 0}).ok)
 
     def test_unobservable_is_a_warning_not_a_pass(self):
         self.assertIsNone(self._check({"supported": False}).ok)
+
+
+class TestABareCorrectedStillCounts(unittest.TestCase):
+    """The API reports an onset from inside its own startup.
+
+    Observed: a --check run printed exactly one `overload corrected`, with
+    no `detected`, during create_source() -- before any watcher could be
+    listening. Keying the verdict on `detected` alone printed "none reported
+    in this sweep" three lines under the warning, which is the same class of
+    error the watcher was built to end.
+    """
+
+    def _counts(self, payload):
+        w = OverloadWatcher().start()
+        try:
+            os.write(2, payload)
+        finally:
+            return w.stop()
+
+    def test_corrected_without_detected_is_an_event(self):
+        c = self._counts(CORRECTED)
+        self.assertEqual(c["overload_detected"], 0)
+        self.assertEqual(c["overload_events"], 1)
+
+    def test_the_unseen_onset_is_reported_as_such(self):
+        self.assertEqual(self._counts(CORRECTED)["onset_before_watching"], 1)
+
+    def test_matched_pairs_are_counted_once_each(self):
+        """Nine detect/correct pairs are nine episodes, not eighteen."""
+        c = self._counts((DETECTED + CORRECTED) * 9)
+        self.assertEqual(c["overload_events"], 9)
+        self.assertNotIn("onset_before_watching", c)
+
+    def test_a_truly_clean_run_has_no_events(self):
+        c = self._counts(b"rspdx :info: total samples: [1,0]\n")
+        self.assertEqual(c["overload_events"], 0)
+        self.assertNotIn("onset_before_watching", c)
+
+    def test_metadata_verdict_follows_events_not_detected(self):
+        w = OverloadWatcher().start()
+        os.write(2, CORRECTED)
+        w.stop()
+        self.assertEqual(w.as_metadata()["verdict"], "overloaded")
+
+
+class TestPreflightCountsEpisodes(unittest.TestCase):
+
+    def _check(self, reports):
+        class B:
+            def overload_reports(self):
+                return reports
+        pf = Preflight()
+        _check_overload_reports(pf, B())
+        return {c.name: c for c in pf.checks}["front-end overload"]
+
+    def test_a_bare_corrected_fails_the_check(self):
+        c = self._check({"supported": True, "overload_detected": 0,
+                         "overload_corrected": 1, "overload_events": 1,
+                         "onset_before_watching": 1})
+        self.assertFalse(c.ok, "an overload the API corrected is still an "
+                               "overload")
+        self.assertIn("before the device was opened", c.detail)
+
+    def test_zero_events_still_passes(self):
+        self.assertTrue(self._check({"supported": True,
+                                     "overload_events": 0}).ok)
 
 
 if __name__ == "__main__":

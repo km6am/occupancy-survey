@@ -208,6 +208,23 @@ class GnuRadioBackend(Backend):
         self._gr, self._blocks, self._fft = _gr()
         from occupancy_survey.backends.gr_sdr_sources import create_source
 
+        # Watch fd 2 from BEFORE the device is opened. The API performs its
+        # own stream-up and calibration inside create_source(), and reports
+        # overload from there: one run printed `overload corrected` with no
+        # preceding `detected`, entirely within that window, and the
+        # preflight line below it said "none reported in this sweep".
+        self._overload = OverloadWatcher().start()
+        try:
+            self._init(sdr_config, create_source, fft_size, integration_s,
+                       settle_s)
+        except BaseException:
+            # __init__ raising means close() will never run, and a leaked
+            # fd 2 redirect would break every later run in the process.
+            self._overload.stop()
+            raise
+
+    def _init(self, sdr_config, create_source, fft_size, integration_s,
+              settle_s) -> None:
         self._config = sdr_config
         self._fft_size = int(fft_size)
         self._integration_s = float(integration_s)
@@ -247,7 +264,6 @@ class GnuRadioBackend(Backend):
         self._tb.connect(self._source, self._clip)
 
         self._running = False
-        self._overload = OverloadWatcher()
 
     # ----------------------------------------------------------------- #
 
@@ -302,10 +318,8 @@ class GnuRadioBackend(Backend):
 
     def _start(self) -> None:
         if not self._running:
-            # Started BEFORE the flowgraph: the API reports overload during
-            # its own stream startup, and three runs of this tool lost
-            # exactly those messages.
-            self._overload.start()
+            # The watcher is already running: it starts in __init__, before
+            # the device is opened. See the note there.
             self._tb.start()
             self._running = True
             time.sleep(self._settle_s)
@@ -532,7 +546,7 @@ class GnuRadioBackend(Backend):
             self._tb.wait()
             self._running = False
         counts = self._overload.stop()
-        if counts.get("overload_detected"):
+        if counts.get("overload_events"):
             logger.warning(
                 "the SDRplay API reported overload %d time(s) during this "
                 "run. Intermodulation from a compressed front end looks "
@@ -540,7 +554,7 @@ class GnuRadioBackend(Backend):
                 "channels read busier than they are. Reduce RF gain (back "
                 "off the LNA) rather than IF gain: the IF attenuator is "
                 "downstream of the stage that compresses.",
-                counts["overload_detected"])
+                counts["overload_events"])
         if self._sink.dropped:
             logger.warning("dropped %d sweeps: the consumer could not keep "
                            "up with the integration rate", self._sink.dropped)
