@@ -334,9 +334,23 @@ def main(argv=None) -> int:
                               f"diagnostic not run", file=sys.stderr)
                         continue
                     any_run = True
+                    # The achieved step is the divisor every order below is
+                    # computed with, so it belongs in the output rather than
+                    # only in the dataset.
+                    step_note = f"{out['gain_step_db_used']:.1f} dB step"
+                    if not out["gain_step_verified"]:
+                        step_note += " (requested, NOT read back)"
+                    elif abs(out["gain_step_db_used"]
+                             - out["gain_step_db_requested"]) > 0.5:
+                        step_note += (f" (asked "
+                                      f"{out['gain_step_db_requested']:.1f})")
+                    unex = out.get("channels_unexplained", 0)
+                    counts = (f"{out['channels_assessable']} assessable, "
+                              f"{out['channels_suspect']} suspect")
+                    if unex:
+                        counts += f", {unex} unexplained"
                     print(f"\n{band.name} @ {step.center_hz/1e6:.3f} MHz "
-                          f"({out['channels_assessable']} assessable, "
-                          f"{out['channels_suspect']} suspect)")
+                          f"({counts}; {step_note})")
                     for c in out["suspect_channels"][:10]:
                         print(f"    {c['freq_hz']/1e6:10.4f} MHz  order "
                               f"{c['implied_order']:4.2f}  {c['verdict']}")

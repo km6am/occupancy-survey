@@ -55,6 +55,17 @@ import numpy as np
 # suspect; 1.6 sits well clear of 1 and well below the 3 of an IM3 product.
 SUSPECT_ORDER = 1.6
 
+# A product's order is a small integer: 2 or 3, occasionally 5 and weakly.
+# An order of 4.6 means the excess fell by 3.6 gain steps, which no simple
+# product predicts -- the parsimonious explanation is that the channel
+# stopped transmitting between the two measurements, and the same holds in
+# reverse for an order near or below zero. Reporting those as "likely 3rd
+# order" dresses an unexplained number up as a mechanism, so they get their
+# own bucket. They are NOT excluded from the advice: an unstable measurement
+# is a reason to repeat the run, not a reason to call the band clean.
+IMPLAUSIBLE_ORDER_MAX = 3.5
+IMPLAUSIBLE_ORDER_MIN = 0.4
+
 
 @dataclass(frozen=True)
 class ChannelOrder:
@@ -67,13 +78,27 @@ class ChannelOrder:
     present_in_both: bool
 
     @property
+    def unexplained(self) -> bool:
+        """Order outside the range any simple product can produce."""
+        if not self.present_in_both or not np.isfinite(self.implied_order):
+            return False
+        return (self.implied_order > IMPLAUSIBLE_ORDER_MAX
+                or self.implied_order < IMPLAUSIBLE_ORDER_MIN)
+
+    @property
     def suspect(self) -> bool:
-        return self.present_in_both and self.implied_order >= SUSPECT_ORDER
+        """Scales like a product, by an order a product can actually have."""
+        return (self.present_in_both and not self.unexplained
+                and self.implied_order >= SUSPECT_ORDER)
 
     @property
     def verdict(self) -> str:
         if not self.present_in_both:
             return "not assessable"
+        if self.implied_order > IMPLAUSIBLE_ORDER_MAX:
+            return "too steep for a product -- signal probably stopped"
+        if self.implied_order < IMPLAUSIBLE_ORDER_MIN:
+            return "level rose with less gain -- signal probably started"
         if self.implied_order >= 2.5:
             return "likely 3rd-order product"
         if self.implied_order >= SUSPECT_ORDER:
@@ -121,19 +146,27 @@ def summarise(results) -> dict:
     """Run-level summary, for the dataset and for the operator."""
     assessable = [r for r in results if r.present_in_both]
     suspect = [r for r in assessable if r.suspect]
+    unexplained = [r for r in assessable if r.unexplained]
     out = {
         "gain_step_db": (results[0].gain_step_db if results else None),
         "channels_assessable": len(assessable),
         "channels_suspect": len(suspect),
+        "channels_unexplained": len(unexplained),
         "suspect_fraction": (len(suspect) / len(assessable)
                              if assessable else None),
+        "unexplained_fraction": (len(unexplained) / len(assessable)
+                                 if assessable else None),
+        # Both buckets are listed, steepest first, so an operator reading
+        # the output cannot mistake one for the other.
         "suspect_channels": [
             {"freq_hz": r.freq_hz, "implied_order": round(r.implied_order, 2),
              "verdict": r.verdict} for r in sorted(
-                suspect, key=lambda r: r.implied_order, reverse=True)[:40]
+                suspect + unexplained, key=lambda r: r.implied_order,
+                reverse=True)[:40]
         ],
     }
     frac = out["suspect_fraction"]
+    unex = out["unexplained_fraction"] or 0.0
     if frac is None:
         out["advice"] = ("no channel was strong enough in both measurements "
                          "to assess; the test says nothing either way")
@@ -151,8 +184,23 @@ def summarise(results) -> dict:
             f"{len(suspect)} channel(s) scale faster than 1:1 with gain and "
             f"are probably products rather than transmissions. Treat their "
             f"occupancy as unmeasured until a filter change clears them.")
+    elif unex > 0.0:
+        out["advice"] = (
+            f"no channel scaled like a product, but {len(unexplained)} of "
+            f"{len(assessable)} moved by more than any product order "
+            f"explains -- traffic starting or stopping between the two "
+            f"measurements looks exactly like this. The band is NOT shown "
+            f"clean; repeat the run. A real product reproduces on the same "
+            f"channel at the same order, intermittent traffic does not.")
     else:
         out["advice"] = ("every assessable channel scaled 1:1 with gain, "
                          "which is what a linear front end does. No "
                          "evidence of intermod at this gain setting.")
+
+    if unex > 0.0 and frac is not None and frac > 0.0:
+        out["advice"] += (
+            f" Separately, {len(unexplained)} channel(s) moved by more than "
+            f"any product order explains, which is the signature of traffic "
+            f"starting or stopping mid-measurement: repeat the run and keep "
+            f"the channels that reproduce at the same order.")
     return out
