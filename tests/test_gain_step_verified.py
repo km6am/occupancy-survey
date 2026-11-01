@@ -78,6 +78,9 @@ class TestSurveySkipsAnUnmovedStep(unittest.TestCase):
             def tune(self, c, s):
                 pass
 
+            def set_band_gain(self, name):
+                return {"actuated": False}
+
             def freq_axis(self):
                 return np.linspace(149e6, 151e6, 512)
 

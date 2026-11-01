@@ -45,6 +45,15 @@ instrument turned out to be GnuRadioBackend.gain_in_effect(): the gain
 readback shows the API's correction directly, in dB, from the device itself.
 Keep this watcher for the cases where it does fire, and do not build on it.
 The honest fix remains a gr-sdrplay3 patch exposing the API's callback.
+
+ON A WINDOWS CONSOLE IT IS NOT STARTED AT ALL. There, Python writes stderr
+through the console handle behind fd 2, and once fd 2 is a pipe every write
+fails with `WinError 1: Incorrect function`. Measured 2026-10-31: each log
+line during the watched window printed `--- Logging error ---` instead, and
+the watcher runs for a backend's whole lifetime, so an overnight survey
+would have logged nothing at all. Losing a watcher that has never caught an
+RSPdx report is the cheaper side of that trade. With stderr redirected to a
+file or pipe it is an ordinary descriptor and the watcher runs as elsewhere.
 """
 
 from __future__ import annotations
@@ -68,6 +77,17 @@ PATTERNS = {
 }
 
 
+def _unsupported_reason(stream) -> str | None:
+    """Why fd 2 cannot be redirected here, or None if it can."""
+    if not (hasattr(os, "dup2") and hasattr(os, "pipe")):
+        return "this platform has no os.dup2"
+    raw = getattr(getattr(stream, "buffer", None), "raw", None)
+    if type(raw).__name__ == "_WindowsConsoleIO":
+        return ("stderr is a Windows console, which redirecting fd 2 would "
+                "break for every log line")
+    return None
+
+
 class OverloadWatcher:
     """Tee file descriptor 2, counting the API's overload reports.
 
@@ -75,14 +95,16 @@ class OverloadWatcher:
     than failing a survey over a diagnostic.
     """
 
-    def __init__(self, patterns=None):
+    def __init__(self, patterns=None, stderr=None):
         self._patterns = patterns or PATTERNS
         self._counts = {k: 0 for k in self._patterns}
         self._lock = threading.Lock()
         self._saved_fd = None
         self._write_fd = None
         self._thread = None
-        self._supported = hasattr(os, "dup2") and hasattr(os, "pipe")
+        self._unsupported_note = _unsupported_reason(
+            sys.stderr if stderr is None else stderr)
+        self._supported = self._unsupported_note is None
         self._lines = 0
 
     # ------------------------------------------------------------------ #
@@ -202,8 +224,8 @@ class OverloadWatcher:
         if corrected > detected:
             out["onset_before_watching"] = corrected - detected
         out["supported"] = self._supported
-        if not self._supported:                          # pragma: no cover
-            out["note"] = ("this platform has no os.dup2; the API's overload "
+        if not self._supported:
+            out["note"] = (f"{self._unsupported_note}; the API's overload "
                            "reports were not captured and the zero counts "
                            "below mean 'not observed', not 'none occurred'")
         return out
@@ -226,7 +248,7 @@ class OverloadWatcher:
             out["verdict"] = "overloaded"
         elif c.get("supported"):
             out["verdict"] = "no_overload_reported"
-        else:                                            # pragma: no cover
+        else:
             out["verdict"] = "not_observed"
         return out
 

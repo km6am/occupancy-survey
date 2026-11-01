@@ -59,6 +59,15 @@ sdr:
   # actuates them on each band change. See docs/front-end.md.
   if_gain_reduction_db: 40
   rf_gain_reduction_db: 0
+  # Per-band RF reduction, overriding rf_gain_reduction_db for the bands
+  # named. The FM control band is the one that usually needs it: near a
+  # city it is far stronger than land mobile, and at a land-mobile gain it
+  # clips and the control cannot pass. Find the value by raising it until
+  # the clip fraction on bcast_fm reads 0 (measured at one CM87 site: 40,
+  # with the bands below at 20). Gain is set after tuning into each band
+  # and recorded per band, so each band's gain stays fixed for a campaign.
+  # band_rf_gain_reduction_db:
+  #   bcast_fm: 40
   # Which physical input the antenna is on. Do not guess it: an input with
   # nothing on it does not error, it reports a quiet band -- and a quiet
   # band is this tool's output, so the failure is indistinguishable from

@@ -42,6 +42,12 @@ class SdrConfig:
     gain: float = 40.0
     if_gain_reduction_db: float = 40.0
     rf_gain_reduction_db: float = 0.0
+    # Per-band RF reduction overriding rf_gain_reduction_db, e.g.
+    # {"bcast_fm": 40}. Measured 2026-11-01: the FM band clipped at 2-3%
+    # with the LMR setting and stopped clipping at 40. Each band's value is
+    # fixed for the campaign and recorded per band in every dataset, so the
+    # fixed-gain rule holds per band rather than per run.
+    band_rf_gain_reduction_db: dict = field(default_factory=dict)
     antenna_port: str = "Antenna B"
     hdr_mode: bool = False
     biasT: bool = False
@@ -138,6 +144,28 @@ class AppConfig:
 
         bands = tuple(raw.get("bands") or DEFAULT_SCHEDULE)
         resolve_bands(bands)  # fail now, not after an hour of acquisition
+
+        per_band = dict(sdr.band_rf_gain_reduction_db or {})
+        stray = set(per_band) - set(bands)
+        if stray:
+            # A misspelled band name would leave that band at the default
+            # gain while the config appeared to set it.
+            raise ValueError(
+                f"sdr.band_rf_gain_reduction_db names band(s) not in the "
+                f"schedule: {', '.join(sorted(stray))}")
+        for name, value in per_band.items():
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(
+                    f"sdr.band_rf_gain_reduction_db.{name} must be a "
+                    f"reduction in dB >= 0, got {value!r}")
+        if per_band and not (sdr.backend.lower() in ("gnuradio", "gr", "rspdx")
+                             and sdr.device_type.lower() == "rspdx"):
+            raise ValueError(
+                "sdr.band_rf_gain_reduction_db is only actuated on an RSPdx "
+                "through the gnuradio backend. Refusing rather than recording "
+                "a per-band gain this receiver would not apply.")
+        sdr.band_rf_gain_reduction_db = {k: float(v)
+                                         for k, v in per_band.items()}
 
         out = dict(raw.get("output") or {})
         return cls(site=site, sdr=sdr, sampling=sampling, detection=detection,
