@@ -244,10 +244,26 @@ class OverloadWatcher:
                 "occupancy, so affected channels read busier than they are."
             ),
         }
+        # ASYMMETRIC, on purpose. A count is evidence of overload; a zero is
+        # not evidence of its absence. Measured 2026-11-01: a 15-minute run
+        # with stderr redirected to a file, so the watcher was running,
+        # captured 0 while the same file received 3,321 `overload detected`
+        # and 5,309 `overload corrected` lines from the SDRplay library --
+        # which writes through a stderr this capture never sees. The
+        # dataset said "no_overload_reported". A verdict that reads as a
+        # clean bill of health beside thousands of reports is the false
+        # reassurance this module exists to prevent, so a zero is
+        # "none_captured" and the interpretation says what that is worth.
         if detected and c.get("supported"):
             out["verdict"] = "overloaded"
         elif c.get("supported"):
-            out["verdict"] = "no_overload_reported"
+            out["verdict"] = "none_captured"
+            out["interpretation"] += (
+                " NONE WERE CAPTURED, WHICH IS NOT EVIDENCE OF A HEALTHY "
+                "FRONT END: on an RSPdx the library's reports were measured "
+                "to bypass this capture entirely (0 captured while 3,321 "
+                "reached the same log file). Use clip_fraction, the gain "
+                "lock and --intermod-check instead.")
         else:
             out["verdict"] = "not_observed"
         return out

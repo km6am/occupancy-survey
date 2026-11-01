@@ -6,6 +6,7 @@ of nine reported overloads in one run, because the IF attenuator sits
 downstream of the stage that compresses.
 """
 
+import io
 import os
 import sys
 import unittest
@@ -14,14 +15,22 @@ from occupancy_survey.backends.base import Backend
 from occupancy_survey.overload_watch import OverloadWatcher
 from occupancy_survey.preflight import Preflight, _check_overload_reports
 
-DETECTED = b"rspdx :warning: overload detected - please reduce gain\n"
+
+def _watcher():
+    """A watcher on a non-console stderr, so the counting tests behave the
+    same from a Windows console as from a redirected run -- on a console
+    the real watcher rightly declines to start."""
+    return OverloadWatcher(stderr=io.StringIO())
+
+
+DETECTED =b"rspdx :warning: overload detected - please reduce gain\n"
 CORRECTED = b"rspdx :warning: overload corrected\n"
 
 
 class TestCounting(unittest.TestCase):
 
     def _run(self, payload: bytes) -> dict:
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         try:
             os.write(2, payload)
         finally:
@@ -46,14 +55,14 @@ class TestCounting(unittest.TestCase):
             self._run(DETECTED.rstrip(b"\n"))["overload_detected"], 1)
 
     def test_stop_is_idempotent(self):
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         first = w.stop()
         self.assertEqual(w.stop(), first)
 
     def test_fd_2_is_restored(self):
         """A diagnostic that leaks a redirect would break every later run."""
         before = os.fstat(2)
-        OverloadWatcher().start().stop()
+        _watcher().start().stop()
         after = os.fstat(2)
         self.assertEqual((before.st_dev, before.st_ino),
                          (after.st_dev, after.st_ino))
@@ -63,7 +72,7 @@ class TestCounting(unittest.TestCase):
         saved = os.dup(2)
         try:
             os.dup2(w_fd, 2)
-            watcher = OverloadWatcher().start()
+            watcher = _watcher().start()
             os.write(2, b"an unrelated diagnostic\n" + DETECTED)
             counts = watcher.stop()
             os.dup2(saved, 2)
@@ -117,7 +126,7 @@ class TestWindowsConsole(unittest.TestCase):
 class TestMetadata(unittest.TestCase):
 
     def test_an_overloaded_run_is_labelled_overloaded(self):
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         os.write(2, DETECTED)
         w.stop()
         m = w.as_metadata()
@@ -126,9 +135,19 @@ class TestMetadata(unittest.TestCase):
                       "the direction of the bias must be in the dataset")
 
     def test_a_clean_run_is_not_labelled_the_same_as_unobserved(self):
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         w.stop()
-        self.assertEqual(w.as_metadata()["verdict"], "no_overload_reported")
+        self.assertEqual(w.as_metadata()["verdict"], "none_captured")
+
+    def test_a_zero_does_not_read_as_a_healthy_front_end(self):
+        """Measured: 0 captured while 3,321 reports reached the same log.
+        The first wording, "no_overload_reported", read as a clean bill of
+        health beside them."""
+        w = _watcher().start()
+        w.stop()
+        m = w.as_metadata()
+        self.assertNotIn("no_overload", m["verdict"])
+        self.assertIn("NOT EVIDENCE", m["interpretation"])
 
     def test_the_base_backend_reports_not_observed_not_zero(self):
         m = Backend.overload_reports(object())
@@ -184,7 +203,7 @@ class TestABareCorrectedStillCounts(unittest.TestCase):
     """
 
     def _counts(self, payload):
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         try:
             os.write(2, payload)
         finally:
@@ -210,7 +229,7 @@ class TestABareCorrectedStillCounts(unittest.TestCase):
         self.assertNotIn("onset_before_watching", c)
 
     def test_metadata_verdict_follows_events_not_detected(self):
-        w = OverloadWatcher().start()
+        w = _watcher().start()
         os.write(2, CORRECTED)
         w.stop()
         self.assertEqual(w.as_metadata()["verdict"], "overloaded")
