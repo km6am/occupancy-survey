@@ -253,6 +253,31 @@ def _check_gain_lock(pf: Preflight, backend) -> None:
                "and every threshold with it. Reduce gain until the device "
                "stops correcting, then re-check.")
 
+
+def _check_overload_reports(pf: Preflight, backend) -> None:
+    """Report what the device said about its own front end."""
+    try:
+        o = backend.overload_reports()
+    except Exception as e:                                # pragma: no cover
+        pf.add("front-end overload", None, f"not observed: {str(e)[:60]}", "")
+        return
+
+    if not o.get("supported"):
+        pf.add("front-end overload", None, "not observable on this backend",
+               "the zero count means 'not observed', not 'none occurred'")
+        return
+
+    n = o.get("overload_detected", 0)
+    if not n:
+        pf.add("front-end overload", True, "none reported in this sweep")
+        return
+
+    pf.add("front-end overload", False,
+           f"the API reported overload {n} time(s)",
+           "intermod from a compressed front end looks like carriers and "
+           "RAISES occupancy. Back off RF gain, not IF: the IF attenuator "
+           "is downstream of the stage that compresses. See docs/front-end.md")
+
 def _probe_device(pf: Preflight, cfg) -> None:
     """Open the SDR and take a single sweep. Opt-in only."""
     from occupancy_survey.__main__ import _build_backend
@@ -301,6 +326,7 @@ def _probe_device(pf: Preflight, cfg) -> None:
             # the SDRplay API corrects overloads on its own. Ask the device
             # whether the gain we set is still the gain in effect.
             _check_gain_lock(pf, backend)
+            _check_overload_reports(pf, backend)
     except Exception as e:                                # pragma: no cover
         pf.add("device access", False, str(e)[:90],
                "see docs/front-end.md and your backend's install notes")
