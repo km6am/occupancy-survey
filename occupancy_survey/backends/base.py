@@ -76,6 +76,15 @@ class Backend(abc.ABC):
                 "actuated_note": "this receiver has no switchable filters; "
                                  "the plan is recorded, not applied"}
 
+    def set_band_gain(self, band_name: str) -> dict:
+        """Apply a band's RF gain after tuning into it; return what applied.
+
+        The default actuates nothing and says so. A backend whose gain is
+        one fixed setting for the whole run has nothing per band to apply.
+        """
+        return {"actuated": False,
+                "note": "this backend has one gain for the whole run"}
+
     def overload_reports(self) -> dict:
         """Front-end overload the device itself reported during this run.
 

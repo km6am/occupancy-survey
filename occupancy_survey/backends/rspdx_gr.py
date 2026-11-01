@@ -261,7 +261,8 @@ class GnuRadioBackend(Backend):
         # So the baseline for "has the gain moved" is what the device
         # accepted at setup. Drift from here is real drift.
         self._gain_accepted = self._read_gain_stages()
-        s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, self._fft_size)
+        self._gain_accepted_at = {self._center: self._gain_accepted}
+        s2v =blocks.stream_to_vector(gr.sizeof_gr_complex, self._fft_size)
         window = fftmod.window.blackmanharris(self._fft_size)
         fft_blk = fftmod.fft_vcc(self._fft_size, True, window, True)
         mag2 = blocks.complex_to_mag_squared(self._fft_size)
@@ -308,6 +309,10 @@ class GnuRadioBackend(Backend):
             meta["gain"] = {
                 "if_reduction_db": cfg.if_gain_reduction_db,
                 "rf_reduction_db": cfg.rf_gain_reduction_db,
+                # Bands not listed use rf_reduction_db. Each band's entry
+                # records what was applied, under front_end.gain.
+                "band_rf_reduction_db": dict(
+                    getattr(cfg, "band_rf_gain_reduction_db", None) or {}),
             }
             meta["gain_units"] = ("SDRplay gain REDUCTION in dB; larger means "
                                  "less gain")
@@ -341,6 +346,7 @@ class GnuRadioBackend(Backend):
             return
         self._center = float(center_hz)
         self._set_center(self._center)
+        self._note_accepted_gain()
         self._sink.reset()
         self._clip.take()
         # The retune settle is discarded rather than integrated: a PLL that
@@ -374,9 +380,13 @@ class GnuRadioBackend(Backend):
         """Stage name -> the value this config asks for, in device units."""
         cfg = self._config
         if getattr(cfg, "device_type", "").lower() == "rspdx":
-            # Set as a negated REDUCTION, so read back the same way.
+            # Set as a negated REDUCTION, so read back the same way. RF is
+            # whatever the current band asked for, which may be a per-band
+            # override rather than the session value.
+            rf = getattr(self, "_rf_reduction_now", None)
             return {"IF": -float(cfg.if_gain_reduction_db),
-                    "RF": -float(cfg.rf_gain_reduction_db)}
+                    "RF": -float(cfg.rf_gain_reduction_db if rf is None
+                                 else rf)}
         return {"": float(getattr(cfg, "gain", 0.0))}
 
     def _read_gain_stages(self) -> dict:
@@ -391,6 +401,26 @@ class GnuRadioBackend(Backend):
             except Exception as e:                       # pragma: no cover
                 logger.debug("gain readback failed for %r: %s", name, e)
         return out
+
+    def _note_accepted_gain(self) -> None:
+        """Record the gain the device reports on first arrival at a tuning.
+
+        The same RF setting reads back as a different number of dB at
+        different frequencies, because the RSPdx's LNA states map to dB per
+        frequency range. Measured 2026-11-01: RF read -24 on every VHF band
+        and FM and -22 on UHF, immediately after each retune and every time.
+        Compared against one setup reading, that failed the gain lock in
+        alternate hours of an overnight run -- whichever band the interval
+        happened to end on. So the reference is per tuning.
+        """
+        at = getattr(self, "_gain_accepted_at", None)
+        if at is not None and self._center not in at:
+            at[self._center] = self._read_gain_stages()
+
+    def _accepted_here(self) -> dict:
+        at = getattr(self, "_gain_accepted_at", None) or {}
+        here = at.get(getattr(self, "_center", None))
+        return here if here else (getattr(self, "_gain_accepted", None) or {})
 
     def gain_in_effect(self) -> dict:
         """What the device says its gain is NOW, against what was configured.
@@ -423,7 +453,7 @@ class GnuRadioBackend(Backend):
                             "gain held cannot be checked"}
 
         want = self._gain_stage_names()
-        accepted = getattr(self, "_gain_accepted", None) or {}
+        accepted = self._accepted_here()
 
         stages, worst = {}, 0.0
         for name, configured in want.items():
@@ -539,6 +569,47 @@ class GnuRadioBackend(Backend):
                 f"this build of gr-sdrplay3 exposes no setter for "
                 f"{', '.join(missing)}; the plan is recorded, not applied")
         return meta
+
+    def set_band_gain(self, band_name: str) -> dict:
+        """Set this band's RF reduction AFTER tuning into it.
+
+        Two measured reasons, both 2026-11-01. The FM control band clipped
+        at 2-3% at the land-mobile setting and stopped at 40 dB of RF
+        reduction, so it needs its own value. And the RSPdx picks an LNA
+        state for the frequency it is at when the gain is SET: RF 20 set at
+        162 MHz read back -22 once tuned to UHF, while RF 20 set at UHF read
+        -19. Setting on every band entry, at the band's own frequency, makes
+        each band's gain the same every visit instead of depending on which
+        band happened to come before it.
+        """
+        cfg = self._config
+        if getattr(cfg, "device_type", "").lower() != "rspdx":
+            return Backend.set_band_gain(self, band_name)
+        overrides = getattr(cfg, "band_rf_gain_reduction_db", None) or {}
+        rf = float(overrides.get(band_name, cfg.rf_gain_reduction_db))
+        self._source.set_gain(-rf, "RF")
+        self._rf_reduction_now = rf
+        self._sink.reset()
+        self._clip.take()
+        time.sleep(self._settle_s)
+        self._sink.reset()
+        self._clip.take()
+        readback = self._read_gain_stages()
+        # This tuning's reference for the gain lock is what the device took
+        # just now, not whatever it read under the previous band's gain.
+        at = getattr(self, "_gain_accepted_at", None)
+        if at is not None:
+            at[self._center] = readback
+        return {"actuated": True,
+                "rf_reduction_db_requested": rf,
+                "per_band_override": band_name in overrides,
+                "readback_db": readback,
+                "set_at_hz": self._center,
+                "note": ("SDRplay gain REDUCTION; set after tuning into the "
+                         "band. Readback dB is the device's table value and "
+                         "was measured to overstate a UHF step (12 dB read, "
+                         "8.3 dB real), so do not compare absolute levels "
+                         "across bands.")}
 
     def set_gain_offset_db(self, offset_db: float) -> bool:
         """Shift IF gain reduction for the paired-gain intermod check."""

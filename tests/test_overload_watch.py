@@ -79,6 +79,41 @@ class TestCounting(unittest.TestCase):
         self.assertEqual(counts["overload_detected"], 1)
 
 
+class TestWindowsConsole(unittest.TestCase):
+    """Redirecting fd 2 under a Windows console broke every log line.
+
+    Measured 2026-10-31: `--- Logging error ---` in place of each message,
+    from `OSError: [WinError 1] Incorrect function`, for as long as the
+    watcher ran -- which is a backend's whole lifetime.
+    """
+
+    class _WindowsConsoleIO:
+        pass
+
+    class _Stderr:
+        def __init__(self, raw):
+            self.buffer = type("B", (), {"raw": raw})()
+
+    def _console_watcher(self):
+        return OverloadWatcher(stderr=self._Stderr(self._WindowsConsoleIO()))
+
+    def test_fd_2_is_not_touched(self):
+        before = os.fstat(2)
+        w = self._console_watcher().start()
+        self.assertIsNone(w._saved_fd)
+        w.stop()
+        after = os.fstat(2)
+        self.assertEqual((before.st_dev, before.st_ino),
+                         (after.st_dev, after.st_ino))
+
+    def test_it_says_not_observed_rather_than_zero(self):
+        w = self._console_watcher().start()
+        c = w.stop()
+        self.assertFalse(c["supported"])
+        self.assertIn("Windows console", c["note"])
+        self.assertEqual(w.as_metadata()["verdict"], "not_observed")
+
+
 class TestMetadata(unittest.TestCase):
 
     def test_an_overloaded_run_is_labelled_overloaded(self):

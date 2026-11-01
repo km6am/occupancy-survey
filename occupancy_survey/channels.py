@@ -265,6 +265,10 @@ class BandPlan:
     # weaker claim than a control's -- it says nothing about duty cycle --
     # and more robust for exactly that reason. See presence.py.
     presence: "PresenceReference" = None
+    # Overrides the policy's baseline percentile for this band only. The
+    # pooled baseline assumes fewer than that percentile of channels are
+    # occupied at once; a band too dense for that needs a lower one.
+    baseline_percentile: float | None = None
     note: str = ""
 
     def __post_init__(self):
@@ -405,6 +409,13 @@ BAND_PLANS: dict[str, BandPlan] = {
                    "band in the schedule; leaving it on for this one makes "
                    "the control read ~0%, which declares the whole run "
                    "untrustworthy for a fault that is in the filter plan"),
+        # Measured 2026-11-01 (CM87, RF reduction 40): the 25th percentile
+        # of the grid sat 5-10 dB above the 5th, because a city FM band has
+        # a station in far more than a quarter of its 200 kHz cells. At the
+        # 25th, 7-10 stations per tuning cleared 10 dB; at the 5th, 10-16.
+        # With 246 bins per channel the noise false-alarm rate is zero at
+        # either percentile, so the lower one costs nothing.
+        baseline_percentile=5.0,
         note="The schedule's only positive control. An FM transmitter "
              "radiates an unmodulated carrier through programme silence, so "
              "carrier presence follows from the modulation scheme rather "

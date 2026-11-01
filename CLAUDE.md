@@ -34,8 +34,12 @@ These are not preferences. Violating one invalidates the data.
 - **AGC is refused**, in the config schema, the source factory and the
   dataset writer. An AGC moves the noise floor that every threshold is
   relative to. This is deliberate; do not "fix" it by adding the option.
-- **Fixed gain for a whole campaign.** Gain is recorded per dataset and a
-  campaign whose gain changed midway cannot be pooled across the change.
+- **Fixed gain for a whole campaign, per band.** Each band's gain is set
+  after tuning into it and recorded per band in every dataset; a campaign
+  whose gain for a band changed midway cannot be pooled across the change.
+  Per-band gain was adopted 2026-11-01 because the FM control clipped at
+  the land-mobile setting, and because the RSPdx's own readback already
+  made absolute levels incomparable across bands.
 - **`~/sota-rf` and `~/Code/hp8935_sinad_serial` are READ-ONLY.** Propose
   changes; do not make them. What this repo needs from them is vendored in
   `occupancy_survey/reference/` so neither checkout is required to run

@@ -51,6 +51,8 @@ class _Backend:
 
     _gain_stage_names = GnuRadioBackend._gain_stage_names
     _read_gain_stages = GnuRadioBackend._read_gain_stages
+    _note_accepted_gain = GnuRadioBackend._note_accepted_gain
+    _accepted_here = GnuRadioBackend._accepted_here
     gain_in_effect = GnuRadioBackend.gain_in_effect
 
     def __init__(self, source, accepted=None, config=None):
@@ -197,6 +199,43 @@ class TestQuantisationIsNotDrift(unittest.TestCase):
         b = _Backend(_Source({"IF": -20.0, "RF": -20.0}), accepted={},
                      **self._ASKED_20)
         self.assertTrue(b.gain_in_effect()["locked"])
+
+
+class TestGainReadbackIsPerTuning(unittest.TestCase):
+    """The same LNA state reads back differently at different frequencies.
+
+    Measured 2026-11-01: RF -24 on VHF and FM, -22 on UHF, at every retune.
+    One setup reading as the reference failed the lock in alternate hours.
+    """
+
+    def _tuned(self, source):
+        b = _Backend(source, accepted={"IF": -20.0, "RF": -24.0},
+                     config=_Cfg(if_db=20.0, rf_db=20.0))
+        b._center = 162.475e6
+        b._gain_accepted_at = {b._center: dict(b._gain_accepted)}
+        return b
+
+    def _tune(self, b, source, hz, rf):
+        b._center = hz
+        source._gains["RF"] = rf
+        b._note_accepted_gain()
+
+    def test_a_band_dependent_readback_is_not_drift(self):
+        source = _Source({"IF": -20.0, "RF": -24.0})
+        b = self._tuned(source)
+        self._tune(b, source, 460e6, -22.0)
+        self.assertTrue(b.gain_in_effect()["locked"])
+        self._tune(b, source, 153e6, -24.0)
+        self.assertTrue(b.gain_in_effect()["locked"])
+
+    def test_movement_at_a_tuning_is_still_caught(self):
+        source = _Source({"IF": -20.0, "RF": -24.0})
+        b = self._tuned(source)
+        self._tune(b, source, 460e6, -22.0)
+        source._gains["RF"] = -34.0          # the API intervening at UHF
+        g = b.gain_in_effect()
+        self.assertFalse(g["locked"])
+        self.assertAlmostEqual(g["worst_drift_db"], 12.0)
 
 
 if __name__ == "__main__":

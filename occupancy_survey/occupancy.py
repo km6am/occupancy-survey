@@ -418,32 +418,56 @@ class BandAccumulator:
     def n_channels_seen(self) -> int:
         return sum(1 for a in self._chan if a.n_present)
 
+    # A channel busy this often is taken to hold a station. An FM station is
+    # on the air or not, so on a working control such a channel reads ~100%.
+    CONTROL_CANDIDATE_MIN = 0.2
+    # 0.9 rather than 0.99: a continuous carrier can still drop below
+    # threshold on fading, and a sweep can land during a transmitter fault.
+    CONTROL_STATION_FLOOR = 0.9
+    # Fraction of candidates that must clear the floor. Set from one site's
+    # data, 2026-11-01: hourly files with the FM band clipping scored
+    # 0.29-0.62, bench tunings at a gain that stopped the clipping
+    # 0.73-0.91. Revisit when a second site exists.
+    CONTROL_PASS_FRACTION = 0.7
+
     def control_check(self) -> dict | None:
         """For a control band, compare measured occupancy to the expectation.
 
-        Returns None for a target band. For a control the answer is the
-        maximum occupancy over the band's channels, because the expectation
-        is that *at least one* receivable continuous carrier exists -- not
-        that every channel in the band has one.
+        Returns None for a target band. For a control, EVERY channel that
+        looks like a station must read near-continuous, not just the best
+        one. The first version passed on the single best channel, and an
+        overnight run whose FM band was clipping (2-3%) passed every hour
+        with two stations at ~100% and most of the rest reading 15-60%: a
+        control that cannot fail validates nothing.
         """
         if self.band.expected_occupancy is None:
             return None
-        occs = [a.occupancy_at(self.policy.threshold_db) for a in self._chan]
-        occs = [o for o in occs if o is not None]
-        if not occs:
+        rows = [(ch.freq_hz, a.occupancy_at(self.policy.threshold_db))
+                for ch, a in zip(self.channels, self._chan, strict=True)]
+        rows = [(f, o) for f, o in rows if o is not None]
+        if not rows:
             return {"expected_occupancy": self.band.expected_occupancy,
                     "max_measured_occupancy": None,
                     "verdict": "no_channels_observed"}
-        best = max(occs)
-        # 0.9 rather than 0.99: a continuous carrier can still drop below
-        # threshold on fading, and the FFT sweep can land during a brief
-        # transmitter fault. A control reading below 0.9 is a red flag for
-        # the threshold or the receive path, not proof of one.
-        verdict = "pass" if best >= 0.9 else "fail"
+        best = max(o for _, o in rows)
+        cand = [(f, o) for f, o in rows if o >= self.CONTROL_CANDIDATE_MIN]
+        steady = [f for f, o in cand if o >= self.CONTROL_STATION_FLOOR]
+        frac = len(steady) / len(cand) if cand else 0.0
+        verdict = ("pass" if cand and frac >= self.CONTROL_PASS_FRACTION
+                   else "fail")
         return {"expected_occupancy": self.band.expected_occupancy,
                 "max_measured_occupancy": best,
-                "pass_floor": 0.9,
+                "pass_floor": self.CONTROL_STATION_FLOOR,
+                "station_candidates": len(cand),
+                "stations_at_floor": len(steady),
+                "fraction_at_floor": frac,
+                "pass_fraction": self.CONTROL_PASS_FRACTION,
+                "intermittent_hz": [f for f, o in cand
+                                    if o < self.CONTROL_STATION_FLOOR],
                 "verdict": verdict,
-                "meaning": "a control band below the floor means the "
-                           "threshold or the receive path is wrong, and the "
-                           "target bands from the same run inherit the fault"}
+                "meaning": "every channel busy at least "
+                           f"{self.CONTROL_CANDIDATE_MIN:.0%} of the time "
+                           "should be a station and read near-continuous; "
+                           "too many intermittent ones means the threshold "
+                           "or the receive path is wrong, and the target "
+                           "bands from the same run inherit the fault"}

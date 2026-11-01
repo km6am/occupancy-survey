@@ -140,7 +140,9 @@ class IntervalDataset:
         from occupancy_survey.detector import (false_alarm_rate,
                                                occupancy_floor_warning)
         thr = self.metadata.detection.get("threshold_db")
-        pct = self.metadata.detection.get("baseline_percentile", 25.0)
+        pct = getattr(band, "baseline_percentile", None)
+        if pct is None:
+            pct = self.metadata.detection.get("baseline_percentile", 25.0)
         floor = (false_alarm_rate(thr, bins_per_channel, pct)
                  if thr is not None and bins_per_channel else None)
         entry = {
@@ -158,6 +160,9 @@ class IntervalDataset:
                 if not band.explicit_channels_hz else None),
             "bins_per_channel": bins_per_channel,
             "channels_observed": channels_observed,
+            # Overrides detection.baseline_percentile for this band; the
+            # stored histograms are relative to THIS baseline.
+            "baseline_percentile": pct,
             # The occupancy an EMPTY channel reads at this threshold and
             # channel width. Travels with the data because a reader has to
             # know whether this file's 3% figures might be nothing at all.

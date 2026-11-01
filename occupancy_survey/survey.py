@@ -25,6 +25,7 @@ checked on the first tune and raised, not warned about.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 
@@ -86,6 +87,7 @@ class Survey:
         self._written: list = []
         self._bandwidth_checked = False
         self._applied_front_end: str | None = None
+        self._band_gain: dict[str, dict] = {}
         self._clock = lambda: datetime.now(timezone.utc)
         self._deadline: float | None = None
         self._status_interval_s = 0.0
@@ -98,6 +100,13 @@ class Survey:
             logger.warning("sampling design: %s", w)
 
     # ----------------------------------------------------------------- #
+
+    def _policy_for(self, band: BandPlan) -> ThresholdPolicy:
+        """The session policy, with the band's baseline percentile if set."""
+        pct = getattr(band, "baseline_percentile", None)
+        if pct is None:
+            return self._policy
+        return dataclasses.replace(self._policy, baseline_percentile=pct)
 
     def _metadata(self) -> AcquisitionMetadata:
         return AcquisitionMetadata(
@@ -438,7 +447,8 @@ class Survey:
 
         # Filters belong to the band, not the session. Applying them before
         # the retune means the noise floor settles once, not twice.
-        if self._applied_front_end != band.name:
+        entering = self._applied_front_end != band.name
+        if entering:
             st.front_end = self._backend.set_filters(band.front_end)
             self._applied_front_end = band.name
             # A notch change reshapes the passband, so every baseline taken
@@ -448,6 +458,14 @@ class Survey:
             st.front_end = self._backend.set_filters(band.front_end)
 
         self._backend.tune(step.center_hz, step.span_hz)
+
+        # Gain is set AFTER the retune: the RSPdx picks its LNA state for
+        # the frequency it is at when the gain is set, so setting it here,
+        # at this band, makes the band's gain the same on every visit.
+        if entering or self._band_gain.get(band.name) is None:
+            self._band_gain[band.name] = self._backend.set_band_gain(
+                band.name)
+        st.front_end = {**st.front_end, "gain": self._band_gain[band.name]}
         axis = self._backend.freq_axis()
         if not self._bandwidth_checked:
             self._check_bandwidth(axis)
@@ -472,7 +490,7 @@ class Survey:
         key = (band.name, step.index)
         baseline = self._baselines.get(key)
         if baseline is None:
-            baseline = BandBaseline(self._policy)
+            baseline = BandBaseline(self._policy_for(band))
             self._baselines[key] = baseline
 
         st.bins_per_channel = max(st.bins_per_channel,
@@ -539,6 +557,8 @@ class Survey:
         # exactly when an operator wants it.
         front_end = self._backend.set_filters(band.front_end)
         self._backend.tune(step.center_hz, step.span_hz)
+        front_end = {**front_end,
+                     "gain": self._backend.set_band_gain(band.name)}
         axis = self._backend.freq_axis()
 
         channels = band.channels()
@@ -551,7 +571,7 @@ class Survey:
             grid, axis, usable_fraction=self._design.usable_fraction)
 
         def measure() -> np.ndarray:
-            baseline = BandBaseline(self._policy)
+            baseline = BandBaseline(self._policy_for(band))
             rows = []
             for i, sweep in enumerate(self._backend.sweeps(
                     sweeps * self._design.integration_s)):

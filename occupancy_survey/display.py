@@ -19,11 +19,15 @@ handled explicitly rather than hoped away:
 
   TERMINAL RESIZED MID-RUN -- the width is re-read on every frame.
 
-  LOG OUTPUT INTERLEAVING -- anything else writing to the stream moves the
-  cursor without the display knowing, so the next redraw eats the wrong
-  rows. In-place mode therefore quiets console logging below WARNING, and a
-  warning that does get through forces the next frame to redraw from
-  scratch instead of moving up.
+  FOREIGN OUTPUT -- anything else writing to the terminal moves the cursor
+  without the display knowing. Python logging can be quieted, but the
+  SDRplay library prints `overload detected` from C++ straight to the
+  console, and on 2026-11-01 those lines broke a move-up-N-rows redraw into
+  a scrolling log of repeated headers over a twelve-hour run. So nothing
+  here counts rows: the block is drawn on the alternate screen, from the
+  top-left every frame, and everything below it is cleared. A stray line
+  shows below the block until the next frame removes it. On exit the normal
+  screen comes back and the last frame is printed once into the scrollback.
 """
 
 from __future__ import annotations
@@ -60,7 +64,8 @@ class StatusDisplay:
     def __init__(self, stream=None, force_plain: bool = False):
         self._stream = stream if stream is not None else sys.stdout
         self._rows = 0
-        self._dirty = False
+        self._alt = False
+        self._last = ""
         try:
             tty = self._stream.isatty()
         except Exception:
@@ -71,49 +76,60 @@ class StatusDisplay:
     def in_place(self) -> bool:
         return self._in_place
 
-    def _width(self) -> int:
+    def _size(self) -> tuple[int, int]:
         try:
-            return max(20, shutil.get_terminal_size().columns)
+            size = shutil.get_terminal_size()
+            return max(20, size.columns), max(5, size.lines)
         except Exception:
-            return 80
+            return 80, 24
+
+    def _width(self) -> int:
+        return self._size()[0]
 
     def invalidate(self) -> None:
-        """Something else wrote to the stream; redraw fresh, do not move up."""
-        self._dirty = True
+        """Something else wrote to the stream.
+
+        Kept for callers; every in-place frame already redraws from the
+        top-left, so there is no cursor state left to correct.
+        """
 
     def render(self, text: str) -> None:
-        width = self._width()
-        # Truncation is not cosmetic: a wrapped line occupies two terminal
-        # rows, and the cursor arithmetic below counts lines, not rows.
+        width, height = self._size()
+        # Truncation is not cosmetic: a wrapped line, or a block taller
+        # than the screen, scrolls the alternate screen and pushes the top
+        # of the block out of view.
         lines = [ln[:width] for ln in text.splitlines()]
+        self._last = "\n".join(lines)
 
-        if self._in_place and self._rows and not self._dirty:
-            self._stream.write(f"{CSI}{self._rows}F")   # up N, column 0
-        elif self._rows:
-            self._stream.write("\n")
+        if not self._in_place:
+            if self._rows:
+                self._stream.write("\n")
+            self._stream.write(self._last + "\n")
+            self._stream.flush()
+            self._rows = len(lines)
+            return
 
+        lines = lines[:height - 1]
         out = []
+        if not self._alt:
+            out.append(f"{CSI}?1049h")                 # alternate screen
+            self._alt = True
+        out.append(f"{CSI}H")                          # top-left
         for ln in lines:
-            out.append(ln)
-            if self._in_place:
-                out.append(f"{CSI}K")                   # clear to end of line
-            out.append("\n")
-        # A shrinking block would leave stale rows below it.
-        if self._in_place and self._rows > len(lines):
-            for _ in range(self._rows - len(lines)):
-                out.append(f"{CSI}K\n")
-            out.append(f"{CSI}{self._rows - len(lines)}F")
-
+            out.append(f"{ln}{CSI}K\n")                # clear to end of line
+        out.append(f"{CSI}J")                          # clear everything below
         self._stream.write("".join(out))
         self._stream.flush()
         self._rows = len(lines)
-        self._dirty = False
 
     def finish(self) -> None:
-        """Leave the final frame on screen and put the cursor after it."""
-        if self._rows:
+        """Return to the normal screen and leave the final frame there."""
+        if self._alt:
+            self._stream.write(f"{CSI}?1049l{self._last}\n")
+            self._alt = False
+        elif self._rows:
             self._stream.write("\n")
-            self._stream.flush()
+        self._stream.flush()
         self._rows = 0
 
 

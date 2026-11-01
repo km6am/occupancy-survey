@@ -238,10 +238,52 @@ class TestNonScrollingDisplay(unittest.TestCase):
         if not d.in_place:
             self.skipTest("in-place unavailable on this host")
         d.render("one\ntwo")
+        tty.buf.clear()
         d.render("one\ntwo")
         text = tty.text()
-        self.assertIn("\033[2F", text,
-                      "the second frame must move the cursor up two lines")
+        self.assertTrue(text.startswith("\033[H"),
+                        "every frame must start from the top-left")
+        self.assertEqual(text.count("one"), 1)
+
+    def test_foreign_output_is_cleared_not_scrolled(self):
+        """The SDRplay library prints overload warnings straight to the
+        console. Measured 2026-11-01: a row-counting redraw turned twelve
+        hours of those into a scrolling log of repeated headers."""
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        d.render("a\nb")
+        tty.write("rspdx :warning: overload detected - please reduce gain\n")
+        tty.buf.clear()
+        d.render("a\nb")
+        text = tty.text()
+        self.assertTrue(text.startswith("\033[H"))
+        self.assertTrue(text.endswith("\033[J"),
+                        "everything below the block must be cleared")
+
+    def test_finish_leaves_the_last_frame_in_the_scrollback(self):
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        d.render("first")
+        d.render("last frame")
+        tty.buf.clear()
+        d.finish()
+        self.assertEqual(tty.text(), "\033[?1049llast frame\n")
+
+    def test_a_block_taller_than_the_screen_is_cut_not_scrolled(self):
+        from occupancy_survey.display import StatusDisplay
+        tty = _FakeTTY()
+        d = StatusDisplay(stream=tty)
+        if not d.in_place:
+            self.skipTest("in-place unavailable on this host")
+        height = d._size()[1]
+        d.render("\n".join(f"row{i}" for i in range(height + 20)))
+        self.assertLessEqual(tty.text().count("\n"), height - 1)
 
     def test_a_non_terminal_emits_no_escape_codes(self):
         """Escapes in a log file under nohup or systemd are garbage."""
@@ -265,8 +307,10 @@ class TestNonScrollingDisplay(unittest.TestCase):
             self.skipTest("in-place unavailable on this host")
         width = d._width()
         d.render("x" * (width + 200))
-        longest = max((len(l) for l in tty.text().split("\n")), default=0)
-        self.assertLessEqual(longest - len("\033[K"), width)
+        import re
+        visible = re.sub(r"\033\[[?0-9;]*[A-Za-z]", "", tty.text())
+        longest = max((len(l) for l in visible.split("\n")), default=0)
+        self.assertLessEqual(longest, width)
 
     def test_a_shrinking_block_clears_the_rows_it_vacates(self):
         from occupancy_survey.display import StatusDisplay
@@ -277,7 +321,7 @@ class TestNonScrollingDisplay(unittest.TestCase):
         d.render("a\nb\nc\nd")
         tty.buf.clear()
         d.render("a")
-        self.assertIn("\033[K", tty.text(),
+        self.assertIn("\033[J", tty.text(),
                       "vacated rows must be cleared or stale text remains")
 
     def test_invalidate_forces_a_fresh_draw(self):
