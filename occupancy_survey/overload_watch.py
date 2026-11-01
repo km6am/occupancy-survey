@@ -29,6 +29,22 @@ tee. It also cannot work on a platform without os.dup2, and it will not see
 messages a library writes by opening /dev/stderr itself. If any of that ever
 becomes a problem, the right answer is a patch to gr-sdrplay3 exposing the
 API's own callback, not a cleverer version of this.
+
+AND IT DOES NOT ACTUALLY CATCH THE RSPdx MESSAGES. Measured, 2026-11-01: a
+run printed `rspdx :warning: overload corrected` to the console with this
+watcher running from before the device was opened, and the count came back
+zero. It counts correctly when something writes to fd 2 in this process --
+there are tests -- so the SDRplay path is not going through our fd 2. The
+likely routes are the API's separate service process, or a descriptor the
+library duplicated when it was loaded, which is before any Python code here
+can intervene.
+
+So this module currently buys very little, and `overload_reports()` reading
+zero MUST NOT be treated as evidence of a healthy front end. The working
+instrument turned out to be GnuRadioBackend.gain_in_effect(): the gain
+readback shows the API's correction directly, in dB, from the device itself.
+Keep this watcher for the cases where it does fire, and do not build on it.
+The honest fix remains a gr-sdrplay3 patch exposing the API's callback.
 """
 
 from __future__ import annotations

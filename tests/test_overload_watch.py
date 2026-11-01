@@ -121,11 +121,18 @@ class TestPreflightVerdict(unittest.TestCase):
         self.assertIn("9 time(s)", c.detail)
         self.assertIn("RF", c.remedy)
 
-    def test_a_clean_sweep_passes(self):
-        self.assertTrue(
-            self._check({"supported": True, "overload_detected": 0,
-                         "overload_corrected": 0,
-                         "overload_events": 0}).ok)
+    def test_a_clean_sweep_is_a_warning_not_a_pass(self):
+        """Zero captured is not zero occurred.
+
+        Measured 2026-11-01: a run printed `overload corrected` to the
+        console with the watcher running from before the device opened, and
+        the count came back zero. Reporting that as [ok] put a green check
+        under a visible warning for the second time.
+        """
+        c = self._check({"supported": True, "overload_detected": 0,
+                         "overload_corrected": 0, "overload_events": 0})
+        self.assertIsNone(c.ok)
+        self.assertIn("gain lock", c.detail)
 
     def test_unobservable_is_a_warning_not_a_pass(self):
         self.assertIsNone(self._check({"supported": False}).ok)
@@ -192,9 +199,9 @@ class TestPreflightCountsEpisodes(unittest.TestCase):
                                "overload")
         self.assertIn("before the device was opened", c.detail)
 
-    def test_zero_events_still_passes(self):
-        self.assertTrue(self._check({"supported": True,
-                                     "overload_events": 0}).ok)
+    def test_zero_events_does_not_pass(self):
+        self.assertIsNone(self._check({"supported": True,
+                                       "overload_events": 0}).ok)
 
 
 if __name__ == "__main__":

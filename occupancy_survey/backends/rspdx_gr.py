@@ -250,6 +250,17 @@ class GnuRadioBackend(Backend):
 
         self._tb = gr.top_block("occupancy_survey")
         self._source = create_source(sdr_config)
+
+        # Read the gain straight back, before a single sample flows. The
+        # RSPdx's RF attenuator moves in discrete LNA states, so a request
+        # for 20 dB can legitimately land on 24 -- and comparing a later
+        # reading against the REQUESTED value then reports quantisation as
+        # if the device had moved the gain by itself. It failed a preflight
+        # that way and would have blocked a campaign over nothing.
+        #
+        # So the baseline for "has the gain moved" is what the device
+        # accepted at setup. Drift from here is real drift.
+        self._gain_accepted = self._read_gain_stages()
         s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, self._fft_size)
         window = fftmod.window.blackmanharris(self._fft_size)
         fft_blk = fftmod.fft_vcc(self._fft_size, True, window, True)
@@ -359,6 +370,28 @@ class GnuRadioBackend(Backend):
     # whole dB, so anything at or under half a step is reporting noise.
     GAIN_LOCK_TOLERANCE_DB = 0.5
 
+    def _gain_stage_names(self) -> dict:
+        """Stage name -> the value this config asks for, in device units."""
+        cfg = self._config
+        if getattr(cfg, "device_type", "").lower() == "rspdx":
+            # Set as a negated REDUCTION, so read back the same way.
+            return {"IF": -float(cfg.if_gain_reduction_db),
+                    "RF": -float(cfg.rf_gain_reduction_db)}
+        return {"": float(getattr(cfg, "gain", 0.0))}
+
+    def _read_gain_stages(self) -> dict:
+        """Gain the device reports per stage right now, or {} if it cannot."""
+        get_gain = getattr(self._source, "get_gain", None)
+        if get_gain is None:
+            return {}
+        out = {}
+        for name in self._gain_stage_names():
+            try:
+                out[name] = float(get_gain(name) if name else get_gain())
+            except Exception as e:                       # pragma: no cover
+                logger.debug("gain readback failed for %r: %s", name, e)
+        return out
+
     def gain_in_effect(self) -> dict:
         """What the device says its gain is NOW, against what was configured.
 
@@ -389,27 +422,31 @@ class GnuRadioBackend(Backend):
                     "note": "this device exposes no gain readback; whether "
                             "gain held cannot be checked"}
 
-        cfg = self._config
-        if getattr(cfg, "device_type", "").lower() == "rspdx":
-            # Set as a negated REDUCTION, so read back the same way.
-            want = {"IF": -float(cfg.if_gain_reduction_db),
-                    "RF": -float(cfg.rf_gain_reduction_db)}
-        else:
-            want = {"": float(getattr(cfg, "gain", 0.0))}
+        want = self._gain_stage_names()
+        accepted = getattr(self, "_gain_accepted", None) or {}
 
         stages, worst = {}, 0.0
         for name, configured in want.items():
+            key = name or "gain"
             try:
                 actual = float(get_gain(name) if name else get_gain())
             except Exception as e:                       # pragma: no cover
-                stages[name or "gain"] = {"configured_db": configured,
-                                          "error": str(e)[:80]}
+                stages[key] = {"configured_db": configured,
+                               "error": str(e)[:80]}
                 continue
-            drift = actual - configured
+            # Drift is measured from what the device ACCEPTED, not from what
+            # was requested: the difference between those two is the
+            # attenuator's step size, which is the hardware working
+            # correctly. Both are reported so a quantised request stays
+            # visible rather than being silently normalised away.
+            base = accepted.get(name, actual if accepted else configured)
+            drift = actual - base
             worst = max(worst, abs(drift))
-            stages[name or "gain"] = {"configured_db": configured,
-                                      "actual_db": actual,
-                                      "drift_db": drift}
+            stages[key] = {"configured_db": configured,
+                           "accepted_db": base,
+                           "actual_db": actual,
+                           "drift_db": drift,
+                           "quantisation_db": base - configured}
 
         out = {"queryable": True, "stages": stages,
                "worst_drift_db": worst,
