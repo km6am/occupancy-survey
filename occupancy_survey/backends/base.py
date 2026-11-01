@@ -76,6 +76,18 @@ class Backend(abc.ABC):
                 "actuated_note": "this receiver has no switchable filters; "
                                  "the plan is recorded, not applied"}
 
+    def overload_reports(self) -> dict:
+        """Front-end overload the device itself reported during this run.
+
+        Overload is the error that FLATTERS this measurement -- intermod
+        products read as carriers and raise occupancy -- so a backend that
+        can observe it should, and one that cannot must say so rather than
+        report zero.
+        """
+        return {"supported": False,
+                "verdict": "not_observed",
+                "note": "this backend cannot observe front-end overload"}
+
     def gain_in_effect(self) -> dict:
         """Gain the device reports now, against what was configured.
 

@@ -42,6 +42,7 @@ import time
 import numpy as np
 
 from occupancy_survey.backends.base import Backend, Sweep
+from occupancy_survey.overload_watch import OverloadWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -246,8 +247,19 @@ class GnuRadioBackend(Backend):
         self._tb.connect(self._source, self._clip)
 
         self._running = False
+        self._overload = OverloadWatcher()
 
     # ----------------------------------------------------------------- #
+
+    def overload_reports(self) -> dict:
+        """The API's own overload counts for this run.
+
+        The authoritative overload signal, and the one the clip counter
+        cannot see: the IF attenuator sits downstream of the stage that
+        compresses, so samples arrive below full scale while the analog
+        path is driven hard.
+        """
+        return self._overload.as_metadata()
 
     def receiver_metadata(self) -> dict:
         cfg = self._config
@@ -277,6 +289,7 @@ class GnuRadioBackend(Backend):
                 # Only meaningful once streaming: before that the API has
                 # had no traffic to overload on.
                 meta["gain_in_effect"] = self.gain_in_effect()
+            meta["overload_reports"] = self.overload_reports()
         else:
             meta["gain"] = getattr(cfg, "gain", None)
             meta["gain_units"] = "device gain, dB"
@@ -289,6 +302,10 @@ class GnuRadioBackend(Backend):
 
     def _start(self) -> None:
         if not self._running:
+            # Started BEFORE the flowgraph: the API reports overload during
+            # its own stream startup, and three runs of this tool lost
+            # exactly those messages.
+            self._overload.start()
             self._tb.start()
             self._running = True
             time.sleep(self._settle_s)
@@ -383,6 +400,15 @@ class GnuRadioBackend(Backend):
         out = {"queryable": True, "stages": stages,
                "worst_drift_db": worst,
                "tolerance_db": self.GAIN_LOCK_TOLERANCE_DB}
+
+        ranges = getattr(self._source, "get_gain_range", None)
+        if ranges is not None:
+            for name in list(stages):
+                try:
+                    lo, hi = tuple(ranges(name))[:2]
+                    stages[name]["settable_db"] = [float(lo), float(hi)]
+                except Exception:                        # pragma: no cover
+                    pass
 
         mode = getattr(self._source, "get_gain_mode", None)
         if mode is not None:
@@ -505,6 +531,16 @@ class GnuRadioBackend(Backend):
             self._tb.stop()
             self._tb.wait()
             self._running = False
+        counts = self._overload.stop()
+        if counts.get("overload_detected"):
+            logger.warning(
+                "the SDRplay API reported overload %d time(s) during this "
+                "run. Intermodulation from a compressed front end looks "
+                "like carriers and RAISES measured occupancy, so affected "
+                "channels read busier than they are. Reduce RF gain (back "
+                "off the LNA) rather than IF gain: the IF attenuator is "
+                "downstream of the stage that compresses.",
+                counts["overload_detected"])
         if self._sink.dropped:
             logger.warning("dropped %d sweeps: the consumer could not keep "
                            "up with the integration rate", self._sink.dropped)
