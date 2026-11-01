@@ -63,8 +63,9 @@ sdr:
   # named. The FM control band is the one that usually needs it: near a
   # city it is far stronger than land mobile, and at a land-mobile gain it
   # clips and the control cannot pass. Find the value by raising it until
-  # the clip fraction on bcast_fm reads 0 (measured at one CM87 site: 40,
-  # with the bands below at 20). Gain is set after tuning into each band
+  # the clip fraction on bcast_fm reads 0 (measured at one CM87 site: 50,
+  # with the bands below at 20 -- a short bench sweep said 40, and a
+  # 15-minute survey at 40 still clipped at 1.3e-3; judge it on a survey). Gain is set after tuning into each band
   # and recorded per band, so each band's gain stays fixed for a campaign.
   # band_rf_gain_reduction_db:
   #   bcast_fm: 40
