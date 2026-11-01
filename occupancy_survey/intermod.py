@@ -142,6 +142,166 @@ def classify(freqs_hz, excess_before, excess_after, gain_step_db: float,
     return out
 
 
+# --------------------------------------------------------------------------- #
+# The RF-step form, on absolute levels. This is what survey.intermod_check()
+# runs; the excess-based functions above remain the derivation.
+# --------------------------------------------------------------------------- #
+#
+# WHY ABSOLUTE LEVELS. The excess form assumes the noise floor falls by the
+# full gain step, which holds only when external noise dominates the floor.
+# Measured 2026-11-01 on an RSPdx at CM87, it does not: an 8.3 dB RF step
+# moved the UHF floor 0.7 dB and the NWR/VHF-high floor 0. Under the excess
+# form every real signal there would read order ~1.9, "likely 2nd-order
+# product". In absolute terms a real signal falls by exactly the step G and
+# an n-th-order product by nG, whatever the floor does.
+#
+# WHY A-B-A. Land mobile keys up and down between measurements, and a channel
+# that stops looks like a steep product. Measuring at the base gain before
+# AND after the reduced one and requiring the two to agree sets those aside
+# as "unstable" instead of classifying them.
+#
+# WHY G IS MEASURED. The RSPdx readback overstated a UHF step by 45% (12 dB
+# read, 8.3 dB real, on three tunings). The median drop of strong, stable
+# channels is the step the signals actually saw; a product among them is
+# outvoted. The readback is used only when fewer than two strong channels
+# exist, and the result says so.
+#
+# A FOURTH CASE the excess form had no name for: a channel that does not move
+# with RF gain at all is generated after the LNA -- a spur. Measured: 157.200
+# moved 0.05 dB and 456.000 0.8 dB for 6-8 dB steps, and both read the same
+# with no antenna on the port.
+
+STABLE_DB = 1.5          # A1 and A2 must agree this closely
+VISIBLE_AT_B_DB = 6.0    # B must clear its own floor, or its level is noise
+STRONG_EXCESS_DB = 25.0  # channels trusted to measure the step itself
+INTERNAL_ORDER_MAX = 0.4
+
+
+def classify_rf_step(freqs_hz, a1_db, b_db, a2_db, base_a1_db: float,
+                     base_b_db: float, base_a2_db: float,
+                     threshold_db: float = 10.0,
+                     readback_step_db: float | None = None) -> dict:
+    """Classify every channel present at base gain from an A-B-A RF step."""
+    f = np.asarray(freqs_hz, float)
+    a1, b, a2 = (np.asarray(x, float) for x in (a1_db, b_db, a2_db))
+    if not (f.shape == a1.shape == b.shape == a2.shape):
+        raise ValueError("freqs and the three level arrays must match")
+    a = 0.5 * (a1 + a2)
+    excess = a - 0.5 * (base_a1_db + base_a2_db)
+    present = ((a1 - base_a1_db >= threshold_db)
+               & (a2 - base_a2_db >= threshold_db))
+    stable = np.abs(a1 - a2) <= STABLE_DB
+    visible = b - base_b_db >= VISIBLE_AT_B_DB
+    drop = a - b
+    strong = present & stable & visible & (excess >= STRONG_EXCESS_DB)
+
+    if strong.sum() >= 2:
+        g, source = float(np.median(drop[strong])), "measured"
+    elif readback_step_db:
+        g, source = float(readback_step_db), "readback"
+    else:
+        g, source = float("nan"), "none"
+
+    floor_drop = 0.5 * (base_a1_db + base_a2_db) - base_b_db
+    rows = []
+    for j in np.where(present)[0]:
+        order = drop[j] / g if np.isfinite(g) and g > 0.5 else float("nan")
+        # A channel that sinks into the floor at B is not unassessable if a
+        # REAL signal of its level would have stayed clearly visible: the
+        # vanishing bounds its order from below. Products are mostly weak,
+        # so without this a 30 dB IM3 under an 8 dB step -- which falls 25
+        # dB and disappears -- would be filed as "too weak" and the check
+        # would miss most of what it exists to find.
+        lower = (excess[j] + floor_drop - VISIBLE_AT_B_DB) / g \
+            if np.isfinite(g) and g > 0.5 else float("nan")
+        real_would_show = (np.isfinite(g)
+                           and excess[j] - g + floor_drop
+                           >= VISIBLE_AT_B_DB + 2.0)
+        if not stable[j]:
+            v = "unstable: changed between the two base-gain readings"
+        elif not visible[j] and real_would_show and lower >= SUSPECT_ORDER:
+            v = (f"vanished at reduced gain where a real signal would show: "
+                 f"product-like, order >= {lower:.1f}")
+            order = lower
+        elif not visible[j]:
+            v = "too weak at reduced gain to assess"
+        elif not np.isfinite(order):
+            v = "not assessable: gain step unknown"
+        elif order < INTERNAL_ORDER_MAX:
+            v = "internal: does not follow RF gain (receiver spur)"
+        elif order > IMPLAUSIBLE_ORDER_MAX:
+            v = "too steep for a product -- signal probably stopped"
+        elif order >= 2.5:
+            v = "likely 3rd-order product"
+        elif order >= SUSPECT_ORDER:
+            v = "likely 2nd-order product"
+        else:
+            v = "real signal"
+        rows.append({"freq_hz": float(f[j]), "excess_db": round(float(excess[j]), 1),
+                     "drop_db": round(float(drop[j]), 2),
+                     "order": None if not np.isfinite(order) else round(float(order), 2),
+                     "verdict": v})
+    return {"gain_step_db_used": g, "gain_step_source": source,
+            "gain_step_readback_db": readback_step_db,
+            "floor_drop_db": round(float(floor_drop), 2),
+            "channels": rows}
+
+
+def summarise_rf_step(result: dict) -> dict:
+    """Counts and advice for an RF-step check, in summarise()'s shape."""
+    rows = result["channels"]
+    assessable = [r for r in rows if r["order"] is not None
+                  and not r["verdict"].startswith(("unstable", "too weak"))]
+    products = [r for r in assessable if "product" in r["verdict"]
+                or r["verdict"].startswith("vanished")]
+    internal = [r for r in assessable if r["verdict"].startswith("internal")]
+    steep = [r for r in assessable if r["verdict"].startswith("too steep")]
+    unstable = [r for r in rows if r["verdict"].startswith("unstable")]
+    out = dict(result)
+    out.update({
+        "channels_present": len(rows),
+        "channels_assessable": len(assessable),
+        "channels_suspect": len(products),
+        "channels_internal": len(internal),
+        "channels_unexplained": len(steep),
+        "channels_unstable": len(unstable),
+        "suspect_fraction": (len(products) / len(assessable)
+                             if assessable else None),
+        "suspect_channels": [
+            {"freq_hz": r["freq_hz"], "implied_order": r["order"],
+             "verdict": r["verdict"]}
+            for r in sorted(products + steep + internal,
+                            key=lambda r: -(r["order"] or 0))[:40]],
+    })
+    if result["gain_step_source"] == "none" or not assessable:
+        out["advice"] = ("nothing was strong and stable enough to assess; "
+                         "the test says nothing either way")
+    elif products:
+        out["advice"] = (
+            f"{len(products)} of {len(assessable)} assessable channel(s) "
+            f"fall faster than the RF step and are probably generated in "
+            f"the front end. Treat their occupancy as unmeasured; fit the "
+            f"band's bandpass, then reduce gain only if that is not enough.")
+    else:
+        out["advice"] = (f"every assessable channel followed the RF step "
+                         f"like a real signal or a spur; no evidence of "
+                         f"front-end intermod at this gain")
+    if internal:
+        out["advice"] += (f". {len(internal)} channel(s) did not follow RF "
+                          f"gain at all: receiver spurs, which add to the "
+                          f"spur list rather than to occupancy")
+    if steep or unstable:
+        out["advice"] += (f". {len(steep) + len(unstable)} channel(s) "
+                          f"changed in a way traffic explains better than "
+                          f"any product; repeat the run to see what "
+                          f"reproduces")
+    if result["gain_step_source"] == "readback":
+        out["advice"] += (". Step taken from the device readback, not "
+                          "measured: fewer than two strong channels. The "
+                          "RSPdx readback was measured 45% high at UHF")
+    return out
+
+
 def summarise(results) -> dict:
     """Run-level summary, for the dataset and for the operator."""
     assessable = [r for r in results if r.present_in_both]
