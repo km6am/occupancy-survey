@@ -235,12 +235,21 @@ def _check_gain_lock(pf: Preflight, backend) -> None:
                "moves the floor. Do not collect until this reads off.")
         return
 
-    detail = ", ".join(
-        f"{k} {v['actual_db']:+.0f} dB"
-        + ("" if abs(v.get("drift_db", 0.0)) <= g["tolerance_db"]
-           else f" (configured {v['configured_db']:+.0f})")
-        for k, v in sorted(g.get("stages", {}).items())
-        if "actual_db" in v)
+    def _stage(name, v) -> str:
+        s = f"{name} {v['actual_db']:+.0f} dB"
+        if abs(v.get("drift_db", 0.0)) > g["tolerance_db"]:
+            s += f" (configured {v['configured_db']:+.0f})"
+        # The settable range is what makes moving attenuation between
+        # stages a measured choice instead of a guess, so print it rather
+        # than only filing it in the dataset.
+        rng = v.get("settable_db")
+        if rng:
+            s += f" [{rng[0]:+.0f}..{rng[1]:+.0f}]"
+        return s
+
+    detail = ", ".join(_stage(k, v)
+                       for k, v in sorted(g.get("stages", {}).items())
+                       if "actual_db" in v)
 
     if g.get("locked"):
         pf.add("gain lock", True, f"{detail}; matches config")
