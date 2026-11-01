@@ -184,6 +184,25 @@ def _print_plan(cfg: AppConfig) -> None:
         print(f"\nWARNING: {w}")
 
 
+def _warn_about_disclosure(cfg) -> None:
+    """Say once, before a run, what this site's metadata would reveal.
+
+    A warning and not a refusal: publishing a callsign is a legitimate
+    choice an operator may want to make. Being surprised by it later is
+    not, and `site_id` is where that happens -- the volunteer config asks
+    for "any short name", and a radio operator's reflex short name resolves
+    to a street address in the public FCC licence database.
+    """
+    from occupancy_survey import disclosure
+
+    try:
+        findings = disclosure.scan(cfg.site.as_metadata(), "site")
+    except Exception:                                     # pragma: no cover
+        return
+    for f in findings:
+        logger.warning("disclosure: %s -- %s", f.detail, f.remedy)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m occupancy_survey",
@@ -356,6 +375,13 @@ def main(argv=None) -> int:
                               f"{c['implied_order']:4.2f}  {c['verdict']}")
                     print(f"  {out['advice']}")
             return 0 if any_run else 5
+
+        # Warn here, not only in --check. The decision on a callsign-shaped
+        # site_id is the operator's to make -- but it has to be a decision,
+        # and run_preflight() only runs under --check, so a volunteer who
+        # goes straight to a survey would have written every dataset with
+        # their callsign in it and never been told.
+        _warn_about_disclosure(cfg)
 
         try:
             written = survey.run(cycles=args.cycles, duration_s=args.duration,
