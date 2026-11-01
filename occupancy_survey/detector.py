@@ -271,7 +271,7 @@ class ChannelLevelExtractor:
     """
 
     def __init__(self, channels, freq_axis_hz: np.ndarray,
-                 usable_fraction: float = 0.8):
+                 usable_fraction: float = 0.8, dc_guard_bins: int = 0):
         """
         Args:
             channels: iterable of Channel.
@@ -281,6 +281,11 @@ class ChannelLevelExtractor:
                 tuner's own artefacts (DC spur, images), so channels near
                 the edge are treated as not observed rather than measured
                 through an unknown filter slope.
+            dc_guard_bins: bins either side of the tuning centre to leave
+                out of every channel. The receiver's DC spike lives there
+                and a channel containing it reads the spike as a carrier.
+                0 (off) for a stitched axis such as rtl_power's, which has
+                no single centre; the live survey sets it.
         """
         self._channels = list(channels)
         self._freq_axis = np.asarray(freq_axis_hz, dtype=np.float64)
@@ -294,7 +299,11 @@ class ChannelLevelExtractor:
         self._usable_lo = center - half_usable
         self._usable_hi = center + half_usable
 
-        self._slices: list[tuple[int, int] | None] = []
+        mid = self._freq_axis.size // 2
+        guard = (set(range(mid - dc_guard_bins, mid + dc_guard_bins + 1))
+                 if dc_guard_bins > 0 else set())
+
+        self._slices: list = []
         for ch in self._channels:
             half_bw = 0.5 * ch.bandwidth_hz
             c_lo, c_hi = ch.freq_hz - half_bw, ch.freq_hz + half_bw
@@ -308,11 +317,22 @@ class ChannelLevelExtractor:
                 # and say so via bins_per_channel, which will read 1.
                 i0 = int(np.argmin(np.abs(self._freq_axis - ch.freq_hz)))
                 i1 = i0 + 1
-            self._slices.append((i0, i1))
+            hit = guard.intersection(range(i0, i1))
+            if hit and len(hit) < i1 - i0:
+                # An index array instead of a slice, for the few channels
+                # that straddle the centre. A channel made only of guard
+                # bins keeps them: blanking it entirely would silently turn
+                # "measured" into "not observed".
+                self._slices.append(np.array(
+                    [i for i in range(i0, i1) if i not in hit]))
+            else:
+                self._slices.append((i0, i1))
 
         observed = [s for s in self._slices if s is not None]
         self._bins_per_channel = (
-            int(round(float(np.mean([b - a for a, b in observed]))))
+            int(round(float(np.mean([
+                (s.size if isinstance(s, np.ndarray) else s[1] - s[0])
+                for s in observed]))))
             if observed else 0
         )
 
@@ -341,8 +361,11 @@ class ChannelLevelExtractor:
         for i, sl in enumerate(self._slices):
             if sl is None:
                 continue
-            a, b = sl
-            out[i] = float(np.max(spec[a:b]))
+            if isinstance(sl, np.ndarray):
+                out[i] = float(np.max(spec[sl]))
+            else:
+                a, b = sl
+                out[i] = float(np.max(spec[a:b]))
         return out
 
 

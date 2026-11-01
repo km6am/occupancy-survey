@@ -68,6 +68,12 @@ sdr:
   # and recorded per band, so each band's gain stays fixed for a campaign.
   # band_rf_gain_reduction_db:
   #   bcast_fm: 40
+  # Frequencies (MHz) where this receiver makes its own signal. MEASURE
+  # them, do not copy someone else's: a channel that reads the same with
+  # no antenna on the port, or that `--intermod-check` reports as
+  # "internal". Channels on them are tagged in the dataset and left out of
+  # service figures. Tuning-centre DC spikes are handled automatically.
+  # spurs_mhz: [151.2, 152.4, 157.2]
   # Which physical input the antenna is on. Do not guess it: an input with
   # nothing on it does not error, it reports a quiet band -- and a quiet
   # band is this tool's output, so the failure is indistinguishable from

@@ -39,10 +39,15 @@ from occupancy_survey.detector import (BandBaseline, ChannelLevelExtractor,
                                        ThresholdPolicy, baseline_grid,
                                        decide)
 from occupancy_survey.occupancy import BandAccumulator, HistogramSpec
-from occupancy_survey.schedule import SamplingDesign, Schedule
+from occupancy_survey.schedule import SamplingDesign, Schedule, tune_steps
 from occupancy_survey.site import SiteMetadata
 
 logger = logging.getLogger(__name__)
+
+# Bins either side of the tuning centre left out of every channel: the DC
+# spike lives there. tune_steps() also moves centres off channels, so this
+# only matters where a centre could not be moved.
+DC_GUARD_BINS = 1
 
 
 @dataclass
@@ -66,8 +71,13 @@ class Survey:
                  policy: ThresholdPolicy | None = None,
                  histogram: HistogramSpec | None = None,
                  out_dir="./data", seed: int | None = None,
-                 predicted_strongest: dict | None = None):
+                 predicted_strongest: dict | None = None,
+                 spurs_mhz=()):
         self._bands: list[BandPlan] = list(bands)
+        # This receiver's known spurs. Recorded, and the channels on them
+        # tagged in every dataset -- not dropped: a spur list is a claim
+        # about one receiver and a reader must be able to see what it hid.
+        self._spurs_mhz = [float(s) for s in spurs_mhz]
         self._backend = backend
         self._site = site
         self._design = design or SamplingDesign()
@@ -114,7 +124,9 @@ class Survey:
             sampling=self._schedule.design_summary(),
             detection=self._policy.as_metadata(),
             histogram=self._histogram.as_metadata(),
-            receiver=dict(self._backend.receiver_metadata()),
+            receiver={**self._backend.receiver_metadata(),
+                      "spurs_mhz": list(self._spurs_mhz),
+                      "dc_guard_bins": DC_GUARD_BINS},
         )
 
     def _begin_interval(self, now: datetime, carry=None) -> None:
@@ -171,7 +183,9 @@ class Survey:
                         st.channels_observed, front_end=st.front_end,
                         visits=st.visits, dwell_total_s=st.dwell_total_s,
                         predicted_strongest_hz=self._predicted_strongest.get(
-                            band.name))
+                            band.name),
+                        tune_centres_hz=[s.center_hz for s in
+                                         tune_steps(band, self._design)])
         if not ds.bands:
             logger.warning("interval produced no observed bands; nothing "
                            "written")
@@ -472,7 +486,8 @@ class Survey:
 
         channels = st.accumulator.channels
         extractor = ChannelLevelExtractor(
-            channels, axis, usable_fraction=self._design.usable_fraction)
+            channels, axis, usable_fraction=self._design.usable_fraction,
+            dc_guard_bins=DC_GUARD_BINS)
 
         # The noise floor is measured from a uniform grid across the whole
         # passband, NOT from the channels being recorded. For a grid band
@@ -485,7 +500,8 @@ class Survey:
                              step.span_hz * self._design.usable_fraction,
                              band.channel_bandwidth_hz)
         grid_extractor = ChannelLevelExtractor(
-            grid, axis, usable_fraction=self._design.usable_fraction)
+            grid, axis, usable_fraction=self._design.usable_fraction,
+            dc_guard_bins=DC_GUARD_BINS)
 
         key = (band.name, step.index)
         baseline = self._baselines.get(key)
@@ -563,12 +579,14 @@ class Survey:
 
         channels = band.channels()
         extractor = ChannelLevelExtractor(
-            channels, axis, usable_fraction=self._design.usable_fraction)
+            channels, axis, usable_fraction=self._design.usable_fraction,
+            dc_guard_bins=DC_GUARD_BINS)
         grid = baseline_grid(step.center_hz,
                              step.span_hz * self._design.usable_fraction,
                              band.channel_bandwidth_hz)
         grid_extractor = ChannelLevelExtractor(
-            grid, axis, usable_fraction=self._design.usable_fraction)
+            grid, axis, usable_fraction=self._design.usable_fraction,
+            dc_guard_bins=DC_GUARD_BINS)
 
         def measure() -> tuple[np.ndarray, float]:
             """Median absolute level per channel, and the median baseline."""

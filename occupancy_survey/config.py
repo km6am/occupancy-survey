@@ -48,6 +48,12 @@ class SdrConfig:
     # fixed for the campaign and recorded per band in every dataset, so the
     # fixed-gain rule holds per band rather than per run.
     band_rf_gain_reduction_db: dict = field(default_factory=dict)
+    # Frequencies (MHz) where THIS receiver makes its own signal: measured,
+    # not guessed -- a channel that reads the same with no antenna on the
+    # port, or that does not follow RF gain. Channels on them are tagged in
+    # the dataset and left out of service figures. Tuning-centre DC spikes
+    # are handled separately and do not belong here.
+    spurs_mhz: list = field(default_factory=list)
     antenna_port: str = "Antenna B"
     hdr_mode: bool = False
     biasT: bool = False
@@ -166,6 +172,12 @@ class AppConfig:
                 "a per-band gain this receiver would not apply.")
         sdr.band_rf_gain_reduction_db = {k: float(v)
                                          for k, v in per_band.items()}
+        try:
+            sdr.spurs_mhz = [float(s) for s in (sdr.spurs_mhz or [])]
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"sdr.spurs_mhz must be a list of frequencies in MHz, got "
+                f"{sdr.spurs_mhz!r}") from None
 
         out = dict(raw.get("output") or {})
         return cls(site=site, sdr=sdr, sampling=sampling, detection=detection,

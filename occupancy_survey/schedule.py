@@ -162,26 +162,67 @@ def tune_steps(band, design: SamplingDesign) -> list[TuneStep]:
     if usable <= 0:
         raise ValueError("usable bandwidth is zero")
 
+    chans = sorted(c.freq_hz for c in band.channels())
+
     # A targeted band's channels are sparse, so cover them rather than
     # sweeping the span they happen to straddle.
     if getattr(band, "targeted", False):
-        return _finalise_of([
-            TuneStep(band_name=band.name, center_hz=center,
-                     span_hz=design.usable_bandwidth_hz, index=i, of=0)
-            for i, (center, _lo) in enumerate(
-                cover_channels(band.channels(), usable))
-        ])
+        out = []
+        for i, (center, lo) in enumerate(cover_channels(band.channels(),
+                                                        usable)):
+            covered = [f for f in chans if lo <= f <= lo + usable]
+            slack = usable - (max(covered) - min(covered)
+                              + band.channel_bandwidth_hz) if covered else 0.0
+            out.append(TuneStep(
+                band_name=band.name,
+                center_hz=_clear_of_channels(center, chans,
+                                             band.channel_bandwidth_hz,
+                                             0.5 * max(slack, 0.0)),
+                span_hz=design.usable_bandwidth_hz, index=i, of=0))
+        return _finalise_of(out)
 
     n = max(1, math.ceil(band.span_hz / usable))
     step_usable = band.span_hz / n
     steps = []
     for i in range(n):
         lo = band.freq_min_hz + i * step_usable
-        center = lo + 0.5 * step_usable
+        center = _clear_of_channels(lo + 0.5 * step_usable, chans,
+                                    band.channel_bandwidth_hz,
+                                    0.5 * (usable - step_usable))
         steps.append(TuneStep(band_name=band.name, center_hz=center,
                               span_hz=design.usable_bandwidth_hz,
                               index=i, of=n))
     return steps
+
+
+def _clear_of_channels(center: float, chans, bandwidth_hz: float,
+                       max_shift_hz: float) -> float:
+    """Move a tuning centre into the gap between two channels.
+
+    The receiver's DC spike sits at the tuning centre, and a channel there
+    reads the spike as a carrier. Measured 2026-11-01 on an RSPdx: 456.000
+    and 162.475 MHz -- both tuning centres -- did not follow RF gain, and
+    456.000 read the same with no antenna; 154.700, another centre, held
+    72% duty at 10-14 dB with almost nothing 4 dB higher. So the centre is
+    moved to the nearest midpoint between adjacent channels that no channel
+    overlaps, within `max_shift_hz` (the slack that keeps every channel of
+    this step inside the usable passband). The survey also blanks the
+    centre bins, which covers a centre that cannot be moved.
+    """
+    half = 0.5 * bandwidth_hz
+
+    def clear(c):
+        return all(abs(f - c) >= half for f in chans)
+
+    if clear(center) or len(chans) < 2:
+        return center
+    mids = [0.5 * (a + b) for a, b in zip(chans, chans[1:])]
+    for m in sorted(mids, key=lambda m: abs(m - center)):
+        if abs(m - center) > max_shift_hz:
+            break
+        if clear(m):
+            return m
+    return center
 
 
 def _finalise_of(steps: list[TuneStep]) -> list[TuneStep]:
