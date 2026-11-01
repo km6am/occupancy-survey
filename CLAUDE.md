@@ -38,7 +38,20 @@ These are not preferences. Violating one invalidates the data.
   campaign whose gain changed midway cannot be pooled across the change.
 - **`~/sota-rf` and `~/Code/hp8935_sinad_serial` are READ-ONLY.** Propose
   changes; do not make them.
-- **Do not open an SDR or serial port unprompted.** Propose the command.
+- **Do not open an SDR or serial port unprompted.** Propose the command,
+  and make a SEPARATE explicit request for *each* prompt that will trigger
+  the radio. Approval for one radio command never carries to the next, not
+  even an identical re-run after a config change. A session may be used to
+  test the radio; a session or loop that then exercises it repeatedly off
+  one approval may not.
+- **"My airplane" / "my controls" / "my radio" is an abort.** On any of
+  those phrases: release the radio, stop code tasks mid-stream, reach the
+  closest clean state as fast as possible, say in a line or two where
+  things stand, and end the turn. It is the aviation positive-exchange-of-
+  control convention and it is used when the work is going the wrong way,
+  so the value is entirely in the speed of the handover. Do not finish the
+  current edit or test run because it is nearly done, and do not spend
+  calls tidying -- leaving work uncommitted and saying so is correct.
 - **Location is coarse and opt-in.** Maidenhead, 4 or 6 characters, and
   anything finer is *refused*, not truncated.
 - **Datasets must carry their acquisition conditions.** The writer refuses
