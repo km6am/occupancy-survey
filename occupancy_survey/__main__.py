@@ -343,7 +343,8 @@ def main(argv=None) -> int:
     with backend:
         survey = Survey(cfg.band_plans(), backend, cfg.site, cfg.sampling,
                         cfg.detection, cfg.histogram, out_dir=cfg.out_dir,
-                        predicted_strongest=predicted_strongest)
+                        predicted_strongest=predicted_strongest,
+                        spurs_mhz=cfg.sdr.spurs_mhz)
 
         if args.intermod_check:
             from occupancy_survey.schedule import tune_steps

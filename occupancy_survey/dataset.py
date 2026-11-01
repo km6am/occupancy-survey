@@ -136,7 +136,8 @@ class IntervalDataset:
     def add_band(self, band, accumulator, bins_per_channel: int,
                  channels_observed: int, front_end: dict | None = None,
                  visits: int = 0, dwell_total_s: float = 0.0,
-                 predicted_strongest_hz: float | None = None) -> None:
+                 predicted_strongest_hz: float | None = None,
+                 tune_centres_hz=None) -> None:
         from occupancy_survey.detector import (false_alarm_rate,
                                                occupancy_floor_warning)
         thr = self.metadata.detection.get("threshold_db")
@@ -163,6 +164,11 @@ class IntervalDataset:
             # Overrides detection.baseline_percentile for this band; the
             # stored histograms are relative to THIS baseline.
             "baseline_percentile": pct,
+            # Where the receiver was tuned. Its DC spike sits at each, so a
+            # reader checking a suspicious channel needs these, and they
+            # changed once (centres moved off channels, 2026-11-01).
+            "tune_centres_hz": (list(tune_centres_hz)
+                                if tune_centres_hz is not None else None),
             # The occupancy an EMPTY channel reads at this threshold and
             # channel width. Travels with the data because a reader has to
             # know whether this file's 3% figures might be nothing at all.
@@ -184,6 +190,14 @@ class IntervalDataset:
             "control_check": accumulator.control_check(),
             "channels": accumulator.channel_records(),
         }
+        # Tag, do not drop, channels on a known receiver spur. Merging and
+        # the summit report leave them out of figures and say how many.
+        spurs = [s * 1e6 for s in self.metadata.receiver.get("spurs_mhz") or ()]
+        if spurs:
+            half = 0.5 * band.channel_bandwidth_hz
+            for rec in entry["channels"]:
+                if any(abs(rec["freq_hz"] - s) <= half for s in spurs):
+                    rec["receiver_spur"] = True
         # A band whose absence indicts the receiver gets a presence check,
         # which is a different and weaker claim than a control's. See
         # occupancy_survey/presence.py.
@@ -282,6 +296,8 @@ class MergedChannel:
     bins_per_channel: set
     hist_lo_db: float
     hist_bin_db: float
+    # Tagged on a known receiver spur in any contributing dataset.
+    receiver_spur: bool = False
 
     def occupancy_at(self, threshold_db: float) -> float | None:
         if self.n_decided == 0:
@@ -351,6 +367,7 @@ def merge_channels(datasets, band_name: str,
             m.underflow += int(ch.get("underflow", 0))
             m.overflow += int(ch.get("overflow", 0))
             m.n_decided += int(ch["n_decided"])
+            m.receiver_spur = m.receiver_spur or bool(ch.get("receiver_spur"))
             m.sites.add(site)
             if bpc is not None:
                 m.bins_per_channel.add(int(bpc))
@@ -472,7 +489,9 @@ def service_occupancy(datasets, threshold_db: float | None = None,
             band_thr = threshold_db
 
         merged = merge_channels(datasets, name)
-        usable = [m for m in merged if m.n_decided >= min_decided]
+        spurs = [m for m in merged if m.receiver_spur]
+        usable = [m for m in merged if m.n_decided >= min_decided
+                  and not m.receiver_spur]
         occs = [m.occupancy_at(band_thr) for m in usable]
         occs = [o for o in occs if o is not None]
         active = [o for o in occs if o > 0.0]
@@ -481,6 +500,7 @@ def service_occupancy(datasets, threshold_db: float | None = None,
             "role": role,
             "threshold_db": band_thr,
             "channels_considered": len(usable),
+            "channels_excluded_as_receiver_spurs": len(spurs),
             "channels_active": len(active),
             "mean_channel_occupancy": (float(np.mean(occs)) if occs else None),
             "active_channel_occupancy": (float(np.mean(active))

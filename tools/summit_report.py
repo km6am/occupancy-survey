@@ -104,6 +104,7 @@ class Pooled:
         self.lo, self.step = lo, step
         self.match = None
         self.band = None
+        self.spur = False
 
     def add(self, rec: dict, sweeps_per_visit: float):
         self.hist += np.asarray(rec["hist"], float)
@@ -165,6 +166,7 @@ def pool(datasets, listed, threshold_db):
             if best is None:
                 continue
             p.add(best, spv)
+            p.spur = p.spur or bool(best.get("receiver_spur"))
             p.band = ch["band"]
             p.match = "exact" if bd <= 1.0 else f"grid cell {bd/1e3:.2f} kHz off"
         out.append((ch, p))
@@ -178,13 +180,19 @@ def audibility_floor(pooled, threshold_db):
     return min(heard) if heard else None
 
 
-def tune_centres(band_name, sampling) -> list[float]:
-    """Tuning centres a grid band was measured at, mirroring tune_steps().
+def tune_centres(band_name, sampling, band_entry=None) -> list[float]:
+    """Tuning centres a band was measured at.
 
     The receiver's DC spike sits at the centre of each tuning. It is not at
     every one -- measured 2026-11-01, 456.000 had one and 452/460/464/468
     did not -- so this only annotates; the spur list is what excludes.
+
+    Datasets record their centres. Files from before that (before centres
+    were moved off channels) used the plain arithmetic below, which is
+    therefore correct for them and only for them.
     """
+    if band_entry and band_entry.get("tune_centres_hz"):
+        return list(band_entry["tune_centres_hz"])
     from occupancy_survey.channels import BAND_PLANS
     plan = BAND_PLANS.get(band_name)
     usable = (sampling.get("usable_bandwidth_hz") or 0) * (sampling.get("usable_fraction") or 0)
@@ -198,8 +206,8 @@ def tune_centres(band_name, sampling) -> list[float]:
 def verdict(ch, p, threshold_db, spurs_hz, floor, integration_s, dwell_s,
             centres=()):
     tol = 0.5 * 12_500.0
-    if any(abs(ch["freq_hz"] - s) <= tol for s in spurs_hz):
-        return {"tier1": "spur", "why": "within half a channel of a known receiver spur"}
+    if p.spur or any(abs(ch["freq_hz"] - s) <= tol for s in spurs_hz):
+        return {"tier1": "spur", "why": "on a known receiver spur"}
     if not p.n_decided:
         return {"tier1": "not observed", "why": "no dataset covered this channel"}
     out = _verdict(ch, p, threshold_db, floor, integration_s, dwell_s)
@@ -323,6 +331,7 @@ def build(datasets, listed, threshold_db=None, hours=None, spurs_mhz=DEFAULT_SPU
     pooled = pool(datasets, listed, threshold_db)
     floor = audibility_floor(pooled, threshold_db)
     by_summit = defaultdict(list)
+    centres: dict[str, list[float]] = {}
     for ch, p in pooled:
         tag = ch.get("near_summit")
         if tag:
@@ -331,9 +340,16 @@ def build(datasets, listed, threshold_db=None, hours=None, spurs_mhz=DEFAULT_SPU
             key = "not near a summit"
         else:
             continue
+        if ch["band"] not in centres:
+            # Union over files: datasets from before and after centres were
+            # moved off channels can be pooled, and each kept its own.
+            centres[ch["band"]] = sorted({
+                c for d in datasets if ch["band"] in d["bands"]
+                for c in tune_centres(ch["band"], d["acquisition"]["sampling"],
+                                      d["bands"][ch["band"]])})
         by_summit[key].append((ch, verdict(
             ch, p, threshold_db, spurs_hz, floor, integ, dwell,
-            tune_centres(ch["band"], samp) if p.band else ())))
+            centres[ch["band"]] if p.band else ())))
     groups = sorted(by_summit.items(), key=lambda kv: (kv[0] == "not near a summit", kv[0]))
     for _, rows in groups:
         rows.sort(key=lambda r: r[0]["freq_hz"])

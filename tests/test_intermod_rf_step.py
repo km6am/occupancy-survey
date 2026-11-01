@@ -159,7 +159,9 @@ class TestSurveyRunsTheRfStep(unittest.TestCase):
                                 usable_bandwidth_hz=2e6)
         band = resolve_bands(["vhf_lmr_low"])[0]
         step = tune_steps(band, design)[0]
-        c = step.center_hz
+        # On the channel grid, near fixed offsets from the centre (which
+        # tune_steps() keeps off any channel).
+        c = round(step.center_hz / 12_500) * 12_500
         em = [(c - 400e3, 35.0, "real"), (c - 200e3, 40.0, "real"),
               (c + 100e3, 30.0, "im3"), (c + 300e3, 20.0, "spur")]
         backend = _RfStepBackend(em, step_db=6.0, readback_db=6.0,
