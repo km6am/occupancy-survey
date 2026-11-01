@@ -238,7 +238,13 @@ def _check_gain_lock(pf: Preflight, backend) -> None:
     def _stage(name, v) -> str:
         s = f"{name} {v['actual_db']:+.0f} dB"
         if abs(v.get("drift_db", 0.0)) > g["tolerance_db"]:
-            s += f" (configured {v['configured_db']:+.0f})"
+            s += f" (was {v.get('accepted_db', v['configured_db']):+.0f})"
+        # A request the attenuator could not land on exactly is the hardware
+        # working, not a fault -- shown, not warned about.
+        q = v.get("quantisation_db")
+        if q is not None and abs(q) > g["tolerance_db"]:
+            s += f" (asked {v['configured_db']:+.0f}, step to "
+            s += f"{v.get('accepted_db', v['actual_db']):+.0f})"
         # The settable range is what makes moving attenuation between
         # stages a measured choice instead of a guess, so print it rather
         # than only filing it in the dataset.
@@ -255,7 +261,7 @@ def _check_gain_lock(pf: Preflight, backend) -> None:
         pf.add("gain lock", True, f"{detail}; matches config")
     else:
         pf.add("gain lock", False,
-               f"gain moved {g['worst_drift_db']:.1f} dB from config "
+               f"gain moved {g['worst_drift_db']:.1f} dB since setup "
                f"({detail})",
                "the device changed gain by itself -- most likely its own "
                "overload correction. A moving gain moves the noise floor "
@@ -281,7 +287,13 @@ def _check_overload_reports(pf: Preflight, backend) -> None:
     # `corrected` still means an overload happened.
     n = o.get("overload_events", 0)
     if not n:
-        pf.add("front-end overload", True, "none reported")
+        # NOT a clean bill of health. The fd 2 capture has been observed
+        # missing RSPdx overload messages that reached the console in the
+        # same run -- see overload_watch.py. The gain-lock check above is
+        # the instrument that actually sees the API intervening.
+        pf.add("front-end overload", None, "none captured (see gain lock)",
+               "fd 2 capture is known to miss SDRplay's own reports; a zero "
+               "here is not evidence the front end is healthy")
         return
 
     early = o.get("onset_before_watching", 0)
