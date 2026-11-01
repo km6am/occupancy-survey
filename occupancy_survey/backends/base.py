@@ -126,6 +126,16 @@ class Backend(abc.ABC):
         """
         return False
 
+    def achieved_gain_offset_db(self) -> float | None:
+        """The gain step the last set_gain_offset_db() actually produced.
+
+        None when the backend cannot measure it. The paired-gain diagnostic
+        divides by this step, so a backend that can verify it should: a
+        request the attenuator rounds off otherwise propagates straight into
+        every implied order.
+        """
+        return None
+
     def close(self) -> None:
         """Release the device. Safe to call twice."""
 

@@ -573,15 +573,30 @@ class Survey:
             logger.warning("%s: backend cannot change gain; intermod check "
                            "skipped", band.name)
             return None
+        # Use the step the device TOOK, not the one requested: classify()
+        # divides by it, and the RSPdx's attenuator moves in discrete steps.
+        achieved = self._backend.achieved_gain_offset_db()
+        step_db = abs(gain_step_db) if achieved is None else abs(achieved)
+        if step_db < 0.5:
+            self._backend.set_gain_offset_db(0.0)
+            logger.warning(
+                "%s: asked for a %.1f dB gain step and the device moved "
+                "%.1f dB; the diagnostic divides by that step, so it cannot "
+                "run. The IF attenuator may be at the end of its range.",
+                band.name, abs(gain_step_db), 0.0 if achieved is None else achieved)
+            return None
         try:
             after = measure()
         finally:
             self._backend.set_gain_offset_db(0.0)
 
         results = classify([c.freq_hz for c in channels], before, after,
-                           abs(gain_step_db),
+                           step_db,
                            present_threshold_db=self._policy.threshold_db)
         out = summarise(results)
+        out["gain_step_db_requested"] = abs(gain_step_db)
+        out["gain_step_db_used"] = step_db
+        out["gain_step_verified"] = achieved is not None
         out["band"] = band.name
         out["center_hz"] = step.center_hz
         out["front_end"] = front_end
