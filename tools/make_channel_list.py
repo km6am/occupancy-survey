@@ -78,6 +78,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from occupancy_survey import disclosure as _disclosure
+
 SCHEMA = "occupancy-survey/channel-list/1"
 DEFAULT_SUMMIT_CSV = Path(
     os.environ.get("SOTA_RF_DIR", Path.home() / "sota-rf")
@@ -202,15 +204,44 @@ def main(argv=None) -> int:
             ],
         }
 
+    # REDACTED BY CONSTRUCTION. This file is handed to volunteers, and an
+    # earlier version copied the prediction's `query` block through intact
+    # -- which carries the generator's exact latitude and longitude -- plus
+    # absolute paths holding the generator's account name. Measured
+    # 2026-11-01. Coordinates become a 4-character grid square (about
+    # 100 x 160 km) and paths become basenames.
+    #
+    # The channel list still narrows the region: it is the set of licensed
+    # channels near one point, so a reader with the FCC database can
+    # intersect them. That is not fixable while the list is targeted at
+    # all, so it is stated here rather than implied away.
+    query = dict(prediction.get("query") or {})
+    try:
+        where = _disclosure.grid_square(float(query["lat"]),
+                                        float(query["lon"]))
+    except (KeyError, TypeError, ValueError):
+        where = None
+    generated_from = {
+        "prediction": Path(str(args.prediction)).name,
+        "summit_csv": Path(str(summit_path)).name if summit_path else None,
+        "top_per_band": args.top_per_band,
+        "min_proxy": args.min_proxy,
+        "query": {
+            "grid_square": where,
+            "location_precision": ("maidenhead 4-character"
+                                   if where else "withheld"),
+            "radius_m": query.get("radius_m"),
+            "bands": query.get("bands"),
+        },
+        "disclosure_note": (
+            "Coordinates are reduced to a 4-character grid square on "
+            "purpose. The channel set itself still indicates a region; see "
+            "occupancy_survey/disclosure.py."),
+    }
+
     payload = {
         "schema": SCHEMA,
-        "generated_from": {
-            "prediction": str(args.prediction),
-            "summit_csv": str(summit_path),
-            "top_per_band": args.top_per_band,
-            "min_proxy": args.min_proxy,
-            "query": prediction.get("query"),
-        },
+        "generated_from": generated_from,
         "caveats": {
             "forecloses_discovery": (
                 "A targeted list cannot find a busy channel with no FCC "

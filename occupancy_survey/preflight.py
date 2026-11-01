@@ -172,6 +172,38 @@ def _check_output(pf: Preflight, out_dir, interval_s: float) -> None:
            "free space, or shorten the campaign")
 
 
+def _check_disclosure(pf: Preflight, cfg) -> None:
+    """Say what this site's metadata would tell a stranger.
+
+    A warning, not a failure: publishing a callsign is the operator's
+    choice to make. It must not be made by ACCIDENT, though, and the
+    volunteer config invites exactly that by describing site_id as "any
+    short name" -- the reflex short name for a radio operator resolves to a
+    street address in the public FCC licence database. site.py refuses a
+    6-character grid square as too precise while that walks through.
+    """
+    from occupancy_survey import disclosure
+
+    try:
+        meta = cfg.site.as_metadata()
+    except Exception as e:                                # pragma: no cover
+        pf.add("disclosure", None, f"site metadata unavailable: {e}"[:90])
+        return
+
+    findings = disclosure.scan(meta, "site")
+    shared = meta.get("location_shared")
+    where = (f"grid {meta.get('grid_square')}" if shared
+             else "location withheld")
+    if not findings:
+        pf.add("disclosure", True,
+               f"{where}; no callsign or precise location in site metadata")
+        return
+    worst = findings[0]
+    pf.add("disclosure", None,
+           f"{where}; {len(findings)} item(s), worst: {worst.detail}"[:160],
+           worst.remedy)
+
+
 def _check_reference(pf: Preflight) -> None:
     """Report the vendored reference and, if reachable, whether it drifted.
 
@@ -234,6 +266,7 @@ def run_preflight(cfg, probe_device: bool = False) -> Preflight:
     _check_backend(pf, cfg.sdr.backend)
     _check_output(pf, cfg.out_dir, cfg.sampling.interval_s)
     _check_reference(pf)
+    _check_disclosure(pf, cfg)
     _check_clock(pf)
 
     if probe_device:

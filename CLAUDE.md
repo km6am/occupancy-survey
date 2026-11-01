@@ -60,6 +60,17 @@ These are not preferences. Violating one invalidates the data.
   calls tidying -- leaving work uncommitted and saying so is correct.
 - **Location is coarse and opt-in.** Maidenhead, 4 or 6 characters, and
   anything finer is *refused*, not truncated.
+- **Minimum disclosure in BOTH directions.** A file generated here and
+  handed to a volunteer must carry nothing of this site: no exact
+  coordinates, no absolute paths (they hold the account name). Run anything
+  outbound through `occupancy_survey.disclosure.scan()`;
+  `tools/make_volunteer_bundle.py` refuses to build on a high finding.
+  Inbound, do not reassure a volunteer beyond what is true — local hour of
+  day gives away the UTC offset and the channel set itself indicates a
+  region, and both are in `disclosure.UNAVOIDABLE_DISCLOSURES` to be stated
+  rather than engineered around. `site_id` is the live trap: the config
+  invites "any short name" and an operator's reflex is their callsign,
+  which resolves to a street address in the public FCC database.
 - **Datasets must carry their acquisition conditions.** The writer refuses
   a file missing threshold, gain, dwell or antenna. A duty cycle without
   those is not a measurement.
