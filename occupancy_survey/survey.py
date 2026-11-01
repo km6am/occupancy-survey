@@ -536,21 +536,21 @@ class Survey:
         self._state[band.name].accumulator.mark_observation_break()
 
 
-    def intermod_check(self, band: BandPlan, step, sweeps: int = 40,
-                       gain_step_db: float = 6.0) -> dict | None:
-        """Paired-gain measurement on one tune step.
+    def intermod_check(self, band: BandPlan, step, sweeps: int = 100,
+                       gain_step_db: float = 10.0) -> dict | None:
+        """RF-step measurement on one tune step: base, reduced, base again.
 
         Returns None when the backend cannot change gain, rather than
         faking a pass -- a diagnostic that cannot run must say so.
 
-        The two measurements are taken back to back on the same tuning so
-        that as little as possible changes between them. Intermittent
-        traffic is still a confound: a channel that stops transmitting
-        between the two looks like a high-order product, which is why
-        intermod.classify() only assesses channels present in both and why
-        the result is a suspicion rather than a verdict.
+        Absolute levels, not excess over the floor, and an RF step, not IF:
+        see the RF-step section of intermod.py for the measurements behind
+        both. The second base-gain reading is what lets traffic that keyed
+        up or down mid-measurement be set aside as unstable rather than
+        read as a product. The result is still a suspicion, resolved by a
+        filter or by a repeat that reproduces it, not a verdict.
         """
-        from occupancy_survey.intermod import classify, summarise
+        from occupancy_survey.intermod import classify_rf_step, summarise_rf_step
 
         # Deliberately independent of interval state: this is a diagnostic
         # that should be runnable before any survey has started, which is
@@ -570,53 +570,58 @@ class Survey:
         grid_extractor = ChannelLevelExtractor(
             grid, axis, usable_fraction=self._design.usable_fraction)
 
-        def measure() -> np.ndarray:
+        def measure() -> tuple[np.ndarray, float]:
+            """Median absolute level per channel, and the median baseline."""
             baseline = BandBaseline(self._policy_for(band))
-            rows = []
-            for i, sweep in enumerate(self._backend.sweeps(
-                    sweeps * self._design.integration_s)):
+            rows, bases = [], []
+            for sweep in self._backend.sweeps(
+                    1.5 * sweeps * self._design.integration_s):
                 b = baseline.update(
                     grid_extractor.levels_db(sweep.spectrum_db))
                 if b is None:
                     continue
-                levels = extractor.levels_db(sweep.spectrum_db)
-                rows.append(levels - b)
+                rows.append(extractor.levels_db(sweep.spectrum_db))
+                bases.append(b)
                 if len(rows) >= sweeps:
                     break
             if not rows:
-                return np.full(len(channels), np.nan)
+                return np.full(len(channels), np.nan), float("nan")
             # Median over sweeps: robust to a channel keying mid-measurement.
-            return np.nanmedian(np.vstack(rows), axis=0)
+            # Channels outside this tuning's usable passband are all-NaN by
+            # design (not observed), so numpy's warning about them is noise.
+            stack = np.vstack(rows)
+            med = np.full(stack.shape[1], np.nan)
+            seen = np.isfinite(stack).any(axis=0)
+            med[seen] = np.nanmedian(stack[:, seen], axis=0)
+            return med, float(np.median(bases))
 
-        before = measure()
+        a1, base_a1 = measure()
         if not self._backend.set_gain_offset_db(-abs(gain_step_db)):
             logger.warning("%s: backend cannot change gain; intermod check "
                            "skipped", band.name)
             return None
-        # Use the step the device TOOK, not the one requested: classify()
-        # divides by it, and the RSPdx's attenuator moves in discrete steps.
         achieved = self._backend.achieved_gain_offset_db()
-        step_db = abs(gain_step_db) if achieved is None else abs(achieved)
-        if step_db < 0.5:
+        if achieved is not None and abs(achieved) < 0.5:
             self._backend.set_gain_offset_db(0.0)
             logger.warning(
                 "%s: asked for a %.1f dB gain step and the device moved "
-                "%.1f dB; the diagnostic divides by that step, so it cannot "
-                "run. The IF attenuator may be at the end of its range.",
-                band.name, abs(gain_step_db), 0.0 if achieved is None else achieved)
+                "%.1f dB, so there is nothing to compare. The attenuator may "
+                "be at the end of its range, or the request fell inside one "
+                "LNA state.", band.name, abs(gain_step_db), achieved)
             return None
         try:
-            after = measure()
+            b, base_b = measure()
         finally:
             self._backend.set_gain_offset_db(0.0)
+        a2, base_a2 = measure()
 
-        results = classify([c.freq_hz for c in channels], before, after,
-                           step_db,
-                           present_threshold_db=self._policy.threshold_db)
-        out = summarise(results)
+        result = classify_rf_step(
+            [c.freq_hz for c in channels], a1, b, a2, base_a1, base_b,
+            base_a2, threshold_db=self._policy.threshold_db,
+            readback_step_db=None if achieved is None else abs(achieved))
+        out = summarise_rf_step(result)
         out["gain_step_db_requested"] = abs(gain_step_db)
-        out["gain_step_db_used"] = step_db
-        out["gain_step_verified"] = achieved is not None
+        out["gain_step_verified"] = result["gain_step_source"] == "measured"
         out["band"] = band.name
         out["center_hz"] = step.center_hz
         out["front_end"] = front_end

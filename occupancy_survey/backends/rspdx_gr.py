@@ -612,7 +612,21 @@ class GnuRadioBackend(Backend):
                          "across bands.")}
 
     def set_gain_offset_db(self, offset_db: float) -> bool:
-        """Shift IF gain reduction for the paired-gain intermod check."""
+        """Shift RF (LNA) gain reduction for the paired-gain intermod check.
+
+        RF, not IF. Measured 2026-11-01: a 6 dB IF step moved the noise
+        floor, real signals and the receiver's own spurs by the same 6 dB,
+        because the IF attenuator sits after the LNA and mixer where front-
+        end products are made -- so an IF step scales a product exactly like
+        a signal and the check could never find one. An RF step changes the
+        drive into the stages that compress.
+
+        The offset is relative to this band's own RF setting, and 0 puts it
+        back. The RSPdx moves RF in discrete LNA states, so the step taken
+        is read back; but the readback was itself measured to overstate a
+        UHF step (12 dB read, 8.3 dB real), so the check measures the step
+        from strong signals and uses this only as a fallback.
+        """
         cfg = self._config
         if getattr(cfg, "device_type", "").lower() != "rspdx":
             fn = getattr(self._source, "set_gain", None)
@@ -623,24 +637,25 @@ class GnuRadioBackend(Backend):
                 return True
             except Exception:                            # pragma: no cover
                 return False
+        rf = getattr(self, "_rf_reduction_now", None)
+        if rf is None:
+            rf = float(cfg.rf_gain_reduction_db)
+        base = self._read_gain_stages().get("RF") if offset_db else None
         try:
             # SDRplay gain is a REDUCTION, so less gain is MORE reduction.
-            self._source.set_gain(
-                -(cfg.if_gain_reduction_db - offset_db), "IF")
+            self._source.set_gain(-(rf - offset_db), "RF")
         except Exception:                                # pragma: no cover
             self._achieved_offset_db = None
             return False
-
-        # Verify the step landed where it was asked to. intermod.classify()
-        # DIVIDES by this number -- implied order is 1 + excess_drop / G --
-        # so a 6 dB request that the attenuator rounded to 4 would inflate
-        # every order by half and could push a real signal past the suspect
-        # bound. We learned the RSPdx quantises when a 20 dB RF request came
-        # back as 24.
-        base = (getattr(self, "_gain_accepted", None) or {}).get("IF")
-        now = self._read_gain_stages().get("IF")
-        self._achieved_offset_db = (
-            None if base is None or now is None else now - base)
+        self._sink.reset()
+        self._clip.take()
+        time.sleep(self._settle_s)
+        self._sink.reset()
+        self._clip.take()
+        if offset_db:
+            now = self._read_gain_stages().get("RF")
+            self._achieved_offset_db = (
+                None if base is None or now is None else now - base)
         return True
 
     def achieved_gain_offset_db(self) -> float | None:

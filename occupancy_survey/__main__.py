@@ -229,8 +229,11 @@ def main(argv=None) -> int:
     ap.add_argument("--intermod-check", action="store_true",
                     help="paired-gain diagnostic: does this front end "
                          "generate its own signals? Opens the SDR.")
-    ap.add_argument("--gain-step-db", type=float, default=6.0,
-                    help="gain reduction for --intermod-check (default 6)")
+    ap.add_argument("--gain-step-db", type=float, default=10.0,
+                    help="RF gain reduction requested for --intermod-check "
+                         "(default 10). The RSPdx moves RF in LNA states, so "
+                         "the step taken differs; it is measured from strong "
+                         "signals (10 requested gave 6 dB at VHF, 8.3 at UHF)")
     ap.add_argument("--check", action="store_true",
                     help="is this host ready? Verifies imports, binaries, "
                          "config, disk and clock. Does NOT open the SDR "
@@ -316,7 +319,8 @@ def main(argv=None) -> int:
             _print_plan(cfg)
         return 0
 
-    if args.cycles is None and args.duration is None:
+    if (args.cycles is None and args.duration is None
+            and not args.intermod_check):
         logger.info("no --cycles or --duration: running until interrupted "
                     "(Ctrl-C finalises the interval in progress)")
 
@@ -356,23 +360,28 @@ def main(argv=None) -> int:
                     # The achieved step is the divisor every order below is
                     # computed with, so it belongs in the output rather than
                     # only in the dataset.
-                    step_note = f"{out['gain_step_db_used']:.1f} dB step"
-                    if not out["gain_step_verified"]:
-                        step_note += " (requested, NOT read back)"
-                    elif abs(out["gain_step_db_used"]
-                             - out["gain_step_db_requested"]) > 0.5:
-                        step_note += (f" (asked "
-                                      f"{out['gain_step_db_requested']:.1f})")
-                    unex = out.get("channels_unexplained", 0)
-                    counts = (f"{out['channels_assessable']} assessable, "
+                    g = out["gain_step_db_used"]
+                    step_note = (f"{g:.1f} dB RF step, "
+                                 f"{out['gain_step_source']}")
+                    rb = out.get("gain_step_readback_db")
+                    if rb is not None and abs(rb - g) > 0.5:
+                        step_note += f"; device read back {rb:.1f}"
+                    step_note += f"; floor moved {out['floor_drop_db']:.1f} dB"
+                    counts = (f"{out['channels_present']} present, "
+                              f"{out['channels_assessable']} assessable, "
                               f"{out['channels_suspect']} suspect")
-                    if unex:
-                        counts += f", {unex} unexplained"
+                    for key, label in (("channels_internal", "internal"),
+                                       ("channels_unexplained", "too steep"),
+                                       ("channels_unstable", "unstable")):
+                        if out.get(key):
+                            counts += f", {out[key]} {label}"
                     print(f"\n{band.name} @ {step.center_hz/1e6:.3f} MHz "
                           f"({counts}; {step_note})")
                     for c in out["suspect_channels"][:10]:
+                        order = c["implied_order"]
                         print(f"    {c['freq_hz']/1e6:10.4f} MHz  order "
-                              f"{c['implied_order']:4.2f}  {c['verdict']}")
+                              f"{'  - ' if order is None else f'{order:4.2f}'}"
+                              f"  {c['verdict']}")
                     print(f"  {out['advice']}")
             return 0 if any_run else 5
 

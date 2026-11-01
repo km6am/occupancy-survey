@@ -37,23 +37,43 @@ right. Nothing downstream can distinguish it from a transmission.
 python -m occupancy_survey --config config.yaml --intermod-check
 ```
 
-Change the front-end gain by *G* dB and watch each channel's level
-**relative to the noise floor**:
+Reduce the **RF** (LNA) gain by *G* dB and watch each channel's
+**absolute** level:
 
-| what it is | level falls by | excess over floor falls by | implied order |
-|---|---|---|---|
-| a real signal | *G* | 0 | **1** |
-| 2nd-order product | 2*G* | *G* | 2 |
-| 3rd-order product | 3*G* | 2*G* | **3** |
+| what it is | level falls by | order = drop / *G* |
+|---|---|---|
+| a real signal | *G* | **1** |
+| 2nd-order product | 2*G* | 2 |
+| 3rd-order product | 3*G* | **3** |
+| a receiver spur | ~0 | **< 0.4**, "internal" |
 
-`order = 1 + Δexcess / G`. Anything materially above 1 is being generated
-inside the receiver. This is a *discriminating* test — the two hypotheses
-predict different numbers and the measurement can land on either side.
+Anything materially above 1 is being generated inside the receiver. This is
+a *discriminating* test — the hypotheses predict different numbers and the
+measurement can land on either side.
 
-Its confound, stated: intermittent traffic. A dispatch channel that stops
-between the two measurements looks like a high-order product. So only
-channels present in **both** are assessed, and the output is a suspicion to
-resolve with a filter, not a verdict.
+Three choices in it were each forced by a measurement (RSPdx, CM87,
+2026-11-01):
+
+- **RF, not IF.** A 6 dB IF step moved the floor, real signals and spurs
+  all by 6 dB: the IF attenuator is after the stages that compress, so it
+  scales a product exactly like a signal. An earlier version stepped IF
+  and could never have found front-end intermod.
+- **Absolute levels, not excess over the floor.** The floor here is the
+  receiver's own: it moved 0–0.7 dB for an 8.3 dB RF step. Measured as
+  excess, every real signal would have read order ~1.9.
+- ***G* is measured,** as the median drop of strong, stable channels. The
+  readback said 12 dB at UHF where signals fell 8.3. The readback is a
+  fallback when fewer than two strong channels exist, and the output says
+  when it was used.
+
+Its confound, stated: intermittent traffic. So the check reads base gain,
+reduced gain, then base gain again, and a channel whose two base readings
+disagree is set aside as **unstable** rather than classified. A weak
+product sinks into the floor at reduced gain; when a real signal of the
+same level would have stayed clearly visible, the vanishing bounds the
+order from below and is reported as product-like. The output is a
+suspicion to resolve with a filter or a repeat that reproduces it, not a
+verdict.
 
 ---
 
