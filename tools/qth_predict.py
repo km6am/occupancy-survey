@@ -36,6 +36,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from occupancy_survey import reference as _reference
+
 # Overridable, because the machine that ANALYSES is not necessarily the
 # machine that SURVEYS. The survey host needs numpy and a backend; this
 # tool needs sota-rf and its FCC cache, and the two rarely coincide.
@@ -47,10 +49,10 @@ FCC_CACHE = SOTA_RF_DIR / "fccdata"
 PSEUDO_ASSOCIATION = "QTH"
 PSEUDO_CODE = f"{PSEUDO_ASSOCIATION}/SITE-001"
 
-SUMMIT_HEADER = ["SummitCode", "SummitName", "RegionName", "AssociationName",
-                 "AltM", "AltFt", "GridRef1", "GridRef2", "Longitude",
-                 "Latitude", "Points", "BonusPoints", "ValidFrom", "ValidTo",
-                 "ActivationCount", "ActivationDate", "ActivationCall"]
+# Both contracts live in occupancy_survey/reference/ now, with the columns
+# sota-rf actually emitted recorded beside them, so a change on its side
+# surfaces here as a named failure instead of a column of None.
+SUMMIT_HEADER = list(_reference.SUMMIT_CSV_HEADER)
 
 
 def write_pseudo_summit(path: Path, lat: float, lon: float,
@@ -136,7 +138,20 @@ def parse_emitters(csv_path: Path, bands) -> list[dict]:
     spans = [(b.name, b.freq_min_hz, b.freq_max_hz, b.role) for b in bands]
     rows = []
     with csv_path.open(newline="", encoding="utf-8", errors="replace") as f:
-        for rec in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        missing = _reference.missing_sota_rf_columns(reader.fieldnames)
+        if missing:
+            # Every one of these is read below. Without them the rows still
+            # parse and the prediction still writes -- with None where the
+            # ERP, the distance or the service class should be, which is a
+            # confidently empty answer rather than an error.
+            raise SystemExit(
+                f"{csv_path}: sota-rf output is missing required column(s) "
+                f"{', '.join(missing)}. Expected the 22-column header "
+                f"recorded in occupancy_survey/reference/; if sota-rf has "
+                f"changed its output, update SOTA_RF_SOURCES_COLUMNS there "
+                f"rather than reading around the gap.")
+        for rec in reader:
             dist_m = None
             try:
                 dist_m = float(rec.get("distance_m") or "nan")

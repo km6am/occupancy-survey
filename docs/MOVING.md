@@ -14,7 +14,9 @@ problem. Read this before running anything on new hardware.
 | `data/` | **no** | gitignored; only `data/demo/` exists anyway |
 | live Claude memory | **no** | keyed to a working-directory path |
 | radioconda, `gr-sdrplay3` | **no** | reinstall |
-| `~/sota-rf` FCC cache (756 MB) | **no** | re-download via sota-rf |
+| `~/sota-rf` FCC cache (756 MB) | **no** | re-download via sota-rf, only for a new prediction |
+| the duty-cycle reference table | **yes** | vendored in `occupancy_survey/reference/` |
+| sota-rf's data contracts + fixtures | **yes** | vendored; analysis runs standalone |
 | the RSPdx itself, its antennas and feedline | **no** | and this is the point below |
 
 **The hardware does not travel, so neither do the measurements.** Everything
@@ -25,15 +27,28 @@ port finding in particular is a property of how that box was cabled.
 
 ## Setting up the new machine
 
-1. **Clone the three repositories.** Only the first is written to.
+1. **Clone this repository. That is enough to run everything but a fresh
+   prediction.**
 
        git clone https://github.com/km6am/occupancy-survey.git ~/Code/occupancy-survey
+
+   What this repo needs from its two upstream projects is vendored in
+   `occupancy_survey/reference/` with the branch, commit, blob and sha256
+   it came from. `occupancy-survey --check` prints that pin.
+
+   The siblings are only needed for two optional things — generating a new
+   FCC-derived prediction, and re-verifying the vendored table against its
+   source:
+
        git clone https://github.com/km6am/sota-rf.git ~/sota-rf
        git clone https://github.com/km6am/hp8935_sinad_serial.git ~/Code/hp8935_sinad_serial
 
-   `~/sota-rf` and `~/Code/hp8935_sinad_serial` are **read-only** to this
-   work: propose changes to them, do not make them. That is a hard
-   constraint in `CLAUDE.md`, not a preference.
+   Both are **read-only** to this work: propose changes to them, do not
+   make them. That is a hard constraint in `CLAUDE.md`, not a preference.
+
+   Note `duty_cycles.md` is **absent on `hp8935_sinad_serial`'s `main`** and
+   differs between its feature branches, so a plain clone may not contain
+   it at all. The vendored copy is pinned to `esg-e4436b`.
 
 2. **Install radioconda** to `~/radioconda` and use `conda`, not `pip`, for
    anything in it. `gnuradio` and `gr-sdrplay3` are not pip-installable.

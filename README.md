@@ -229,12 +229,26 @@ roles have deliberately different dependencies:
 | role | needs | does |
 |---|---|---|
 | **survey host** | numpy, PyYAML, a backend | runs unattended, writes interval files |
-| **analysis host** | + `sota-rf`, pandas, matplotlib | predicts, merges, validates, plots |
+| **analysis host** | + pandas, matplotlib | merges, validates, plots |
+| **generating a fresh prediction** | + a `sota-rf` checkout and its FCC cache | that one step, and nothing else |
 
-The survey host never needs `sota-rf` or a 400 MB FCC download: a targeted
-channel list is a small JSON generated on the analysis host and copied
-across. Point the analysis tools at a different checkout with
-`SOTA_RF_DIR=/path/to/sota-rf`.
+**No sibling checkout is needed to clone and use this repository.** What it
+reads from its two upstream projects — the duty-cycle reference table and
+sota-rf's data contracts — is vendored in `occupancy_survey/reference/`,
+with the source branch, commit, blob and sha256 it was taken from. Fixtures
+in `tests/fixtures/` stand in for a real sota-rf run, so merging,
+validating and plotting all work standalone.
+
+Only *generating a new* prediction still shells out to `sota-rf`, which is
+an optional import step: point it at a checkout with
+`SOTA_RF_DIR=/path/to/sota-rf`. Deliberately not vendored — it is ~756 MB
+of third-party data with an acquisition date on it, and copying it would
+freeze a dataset that should be refreshed and duplicate a maintained tool.
+
+`occupancy-survey --check` prints which pinned revision the vendored table
+came from and, if the source repository happens to be present, whether it
+has drifted since. When the source is absent the answer is "not
+re-verified", never "fine".
 
 Starting a Claude Code session on the survey machine? `CLAUDE.md` loads
 automatically and carries the settled design decisions, and

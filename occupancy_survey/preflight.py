@@ -172,6 +172,35 @@ def _check_output(pf: Preflight, out_dir, interval_s: float) -> None:
            "free space, or shorten the campaign")
 
 
+def _check_reference(pf: Preflight) -> None:
+    """Report the vendored reference and, if reachable, whether it drifted.
+
+    The tri-state matters. On a survey host the source repository is
+    normally absent, and that is fine -- but it must print as "not
+    re-verified", never as agreement, because a stale continuity class
+    silently moves an emitter between the continuous and intermittent sets
+    in every comparison made afterwards.
+    """
+    from occupancy_survey import reference
+
+    p = reference.duty_cycles_provenance()
+    short = (f"duty_cycles.md s3 @ {p['branch_read']} "
+             f"blob {p['blob_sha1'][:12]}, captured {p['captured']}")
+    drift = reference.check_duty_cycles_drift()
+    if drift.in_sync is True:
+        pf.add("vendored reference", True, f"{short}; source matches")
+    elif drift.in_sync is False:
+        pf.add("vendored reference", False,
+               f"{short}; SOURCE HAS CHANGED",
+               "python tools/revendor_reference.py --branch <branch> "
+               "--dry-run, then read what moved")
+    else:
+        pf.add("vendored reference", None,
+               f"{short}; source not present, so not re-verified",
+               "analysis hosts can clone hp8935_sinad_serial to re-verify; "
+               "a survey host does not need it")
+
+
 def _check_clock(pf: Preflight) -> None:
     """Datasets merge across sites on timestamps, so the clock matters.
 
@@ -204,6 +233,7 @@ def run_preflight(cfg, probe_device: bool = False) -> Preflight:
 
     _check_backend(pf, cfg.sdr.backend)
     _check_output(pf, cfg.out_dir, cfg.sampling.interval_s)
+    _check_reference(pf)
     _check_clock(pf)
 
     if probe_device:
