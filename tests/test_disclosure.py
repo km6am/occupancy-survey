@@ -212,6 +212,60 @@ class TestDatasetDiscloses(unittest.TestCase):
         self.assertEqual(f[0].kind, "callsign")
 
 
+class TestTheWarningReachesANormalRun(unittest.TestCase):
+    """A warning in a mode you can skip is documentation, not a warning.
+
+    The callsign check was added to run_preflight(), which only runs under
+    --check. A volunteer going straight to a survey would have written
+    every dataset with their callsign in it and never been told. Keeping
+    this a warning rather than a refusal was a deliberate choice -- which
+    only means anything if the warning actually fires.
+    """
+
+    def _warn(self, site_id):
+        import logging
+        from types import SimpleNamespace
+
+        from occupancy_survey.__main__ import _warn_about_disclosure
+        from occupancy_survey.site import SiteMetadata
+
+        cfg = SimpleNamespace(site=SiteMetadata(
+            site_id=site_id, receiver_model="RTL-SDR", antenna="dipole"))
+        with self.assertLogs("occupancy_survey",
+                             level=logging.WARNING) as cm:
+            _warn_about_disclosure(cfg)
+            logging.getLogger("occupancy_survey").warning("sentinel")
+        return [m for m in cm.output if "sentinel" not in m]
+
+    def test_a_callsign_warns_on_the_normal_path(self):
+        logged = self._warn("KM6AM")
+        self.assertTrue(logged, "no warning on the survey path")
+        self.assertIn("callsign", " ".join(logged))
+        self.assertIn("FCC", " ".join(logged))
+
+    def test_an_ordinary_label_is_silent(self):
+        self.assertEqual(self._warn("vol-test-1"), [])
+
+    def test_it_warns_rather_than_raising(self):
+        # The decision was warn, not refuse. If this ever starts raising,
+        # a volunteer loses a run they had already committed to.
+        from types import SimpleNamespace
+
+        from occupancy_survey.__main__ import _warn_about_disclosure
+        from occupancy_survey.site import SiteMetadata
+        cfg = SimpleNamespace(site=SiteMetadata(
+            site_id="KM6AM", receiver_model="RTL-SDR", antenna="dipole"))
+        self.assertIsNone(_warn_about_disclosure(cfg))
+
+    def test_broken_site_metadata_does_not_stop_a_run(self):
+        from types import SimpleNamespace
+
+        from occupancy_survey.__main__ import _warn_about_disclosure
+        bad = SimpleNamespace(site=SimpleNamespace(
+            as_metadata=lambda: (_ for _ in ()).throw(RuntimeError("boom"))))
+        self.assertIsNone(_warn_about_disclosure(bad))
+
+
 class TestBundleManifestCannotRot(unittest.TestCase):
     """Every file the bundle promises to ship must exist."""
 
