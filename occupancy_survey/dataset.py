@@ -82,7 +82,12 @@ class AcquisitionMetadata:
             "schema": SCHEMA,
             "tool": "occupancy-survey",
             "python": platform.python_version(),
-            "platform": platform.platform(),
+            # OS FAMILY ONLY. platform.platform() was written here and
+            # carries kernel version, build and architecture -- a host
+            # fingerprint with no measurement value, in a file a stranger
+            # is asked to send back. The family is enough to explain a
+            # backend difference.
+            "os": platform.system(),
             **self.software,
         }
         return {"site": self.site, "sampling": self.sampling,

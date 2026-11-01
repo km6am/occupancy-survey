@@ -50,6 +50,44 @@ occupancy survey   qth   elapsed 00:04:00   0 file(s) written
 
 In-place on a terminal, plain appended blocks when piped to a log.
 
+To hand this to a stranger, build the kit rather than sending the repo:
+
+```bash
+python tools/make_volunteer_bundle.py --out volunteer-kit.zip
+```
+
+98 KiB, 25 files, runs with only `numpy` and `PyYAML` — verified by
+extracting it and running `--check` from the extracted copy. It leaves out
+the analysis tools, the GNU Radio backends, the tests and the FCC
+pipeline: none are needed to contribute, and a smaller kit is one a
+volunteer can actually read before running it, which is the right amount
+of trust to ask of someone who was sent a zip by a stranger.
+
+Every file going in is scanned by `occupancy_survey/disclosure.py` and a
+high-severity finding **refuses** the build. That scanner exists because
+`tools/make_channel_list.py` used to copy the prediction's `query` block
+into the channel list verbatim — so the one file designed to be handed to
+volunteers carried this site's exact latitude and longitude, plus absolute
+paths holding the account name. Fixed; coordinates are now reduced to a
+4-character grid square and paths to basenames.
+
+The kit also ships the scanner itself, so a volunteer can audit a file
+before sending it without taking anyone's word for what is in it:
+
+```bash
+python -m occupancy_survey.disclosure data/occ_*.json.gz
+```
+
+**What the scanner cannot fix, and the kit says so in writing.** Local hour
+of day is load-bearing — land-mobile traffic follows the local working day
+— and combined with the UTC timestamp it reveals the UTC offset. And the
+occupancy data *is* a location fingerprint: which public-safety channels a
+receiver hears identifies a region more sharply than a 4-character grid
+square does. Neither is removable without destroying the measurement, so
+both are stated for informed consent instead. A volunteer who is promised
+privacy and later works out that their channel list identifies their county
+will not send a second file.
+
 Volunteers running an RTL-SDR should read
 [docs/volunteer-quickstart.md](docs/volunteer-quickstart.md) instead — one
 page, no radio knowledge assumed.
