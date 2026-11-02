@@ -24,19 +24,37 @@ A QTH IS NOT A SUMMIT. This is the prediction for one fixed location with
 one antenna. It is not a summit field strength and must not be presented as
 one: the propagation path and the antenna are both different.
 
-TWO ENGINES. --engine pipeline is the above: sota_rf_sources.py, no terrain,
-ERP/d^2, the lowest 40 channels per site. --engine qth-cli runs sota-rf's
-location report (web/map/qth_cli.mjs), which adds SRTM terrain diffraction,
-the FM vertical pattern, the full channel list and the model's own dBm with
-an error band, and writes occupancy-survey/qth-prediction/2. Both emit
+THREE ENGINES, and the one a volunteer uses needs none of the above.
+
+  --engine report   reads a location report the operator DOWNLOADED FROM THE
+                    MAP UI ("Report for a location" -> "Download JSON"). No
+                    sota-rf checkout, no Node, no FCC cache: the report is
+                    computed in the browser and the file is the whole input.
+                    This is the documented volunteer path (sota-rf
+                    docs/volunteer/location-report-howto.html) and the only
+                    one available on a machine without sota-rf.
+  --engine qth-cli  runs web/map/qth_cli.mjs locally. The same module as the
+                    page, so the same object -- but it lives on sota-rf's
+                    unmerged qth-rfi-report branch and is not served.
+  --engine pipeline the above pseudo-summit run: sota_rf_sources.py, no
+                    terrain, ERP/d^2, the lowest 40 channels per site.
+
+report and qth-cli both write occupancy-survey/qth-prediction/2: SRTM
+terrain diffraction, the FM vertical pattern, the full channel list and the
+model's own dBm with an error band. pipeline writes /1. All three emit
 field_proxy_w_per_m2 with the same meaning and units, so one validator reads
-either; a /2 file additionally carries p_dbm_ref and path, which is what
+any of them; a /2 file additionally carries p_dbm_ref and path, which is what
 makes the audibility floor frequency-aware and the path residual a
 discriminator rather than a restatement.
 
-The pipeline engine is still the default because qth_cli.mjs lives on an
-unmerged sota-rf branch: defaulting to it would make this tool fail on any
-machine that has only sota-rf's mainline. Flip the default when it lands.
+The two /2 engines differ in ONE field that matters: model.engine. The page
+stamps its deploy hash, the CLI stamps node-<sha1 of the model sources>.
+Different namespaces for the same model, so predictions from the two must not
+be pooled in one validation even when the model is identical (CAVEATS_V2
+engine_mixing); split by engine.
+
+pipeline is still the default because it is the engine that works with only
+sota-rf's mainline. --engine report is what a survey volunteer should use.
 """
 
 from __future__ import annotations
@@ -498,6 +516,93 @@ def _resolve_ant_agl(args) -> float:
         "site.antenna_height_m set.")
 
 
+def read_report_query(report_path: Path, args) -> tuple[dict, dict]:
+    """The query block of a downloaded location report, cross-checked.
+
+    A UI download already records the point, the antenna height, the gain,
+    the span and the channel floor it was built with, so this takes them
+    from the FILE rather than the command line. Retyping them is how you get
+    a prediction whose header describes a different station than its rows:
+    every level in the file belongs to the point the browser traced.
+
+    --lat/--lon/--ant-agl may still be given, as a check. A disagreement is
+    refused rather than resolved, because either value could be the right
+    one and guessing silently mislabels the prediction.
+    """
+    data = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    schema = str(data.get("schema", ""))
+    if not schema.startswith("sota-rf/qth-rfi"):
+        raise SystemExit(
+            f"{report_path}: schema is {schema!r}, not a sota-rf/qth-rfi "
+            f"location report. --engine report reads the JSON the map UI's "
+            f"\"Download JSON\" button saves (named like "
+            f"qth-rfi-YYYY-MM-DD.json).")
+    query = data.get("query") or {}
+    for key in ("lat", "lon"):
+        if query.get(key) is None:
+            raise SystemExit(
+                f"{report_path}: query.{key} is missing, so the report does "
+                f"not say where it was built. Rebuild it in the UI.")
+    if query.get("ant_agl_m") is None:
+        raise SystemExit(
+            f"{report_path}: query.ant_agl_m is missing. The antenna height "
+            f"moves every diffraction loss in the model and the feedback "
+            f"endpoint requires it, so the report cannot be used without "
+            f"it. Rebuild it in the UI with the height filled in.")
+
+    # 1e-5 degrees is about 1.1 m: tighter than any real disagreement, loose
+    # enough for the rounding a typed-in coordinate picks up.
+    for name, given, found in (("--lat", args.lat, query["lat"]),
+                               ("--lon", args.lon, query["lon"]),
+                               ("--ant-agl", args.ant_agl,
+                                query["ant_agl_m"])):
+        if given is None:
+            continue
+        tol = 1e-5 if name != "--ant-agl" else 1e-6
+        if abs(float(given) - float(found)) > tol:
+            raise SystemExit(
+                f"{name} is {given}, but {report_path} was built at "
+                f"{found}. The report's rows are levels at ITS point, so "
+                f"one of the two is the wrong station. Drop {name} to use "
+                f"the report's own value, or rebuild the report.")
+    return data, query
+
+
+def report_provenance(data: dict, rows: list[dict]) -> dict:
+    """What the ingested report was built from, measured off the file.
+
+    The live map's exported names JSON has no ref/call column (sota-rf F1,
+    not yet re-exported), and a report built from it carries blank emitter
+    references. That is not visible in the row count -- the rows are all
+    there -- so it is counted here and stated, because make_channel_list.py
+    joins summit tags on ref and a blank one joins to nothing.
+    """
+    model = data.get("model") or {}
+    # rf_ref, not ref: parse_qth_report renames the report's column, and
+    # reading the report's own name here would have counted every row as
+    # blank and cried wolf on a complete export.
+    n_blank_ref = sum(1 for r in rows
+                      if not (r.get("rf_ref") or "").strip())
+    note = None
+    if rows and n_blank_ref == len(rows):
+        note = (f"every one of {len(rows)} rows has a blank emitter ref. The "
+                f"transmitter export behind this report predates sota-rf's "
+                f"ref/call column, so rows cannot be joined to a callsign "
+                f"or to a summit tag by ref.")
+    elif n_blank_ref:
+        note = f"{n_blank_ref} of {len(rows)} rows have a blank emitter ref."
+    return {
+        "report_generated": data.get("generated"),
+        "report_data_date": model.get("data"),
+        "report_engine": model.get("engine"),
+        "report_dem": model.get("dem"),
+        "report_coverage": model.get("coverage"),
+        "report_n_channels": data.get("n_channels"),
+        "report_n_below_floor": data.get("n_below_floor"),
+        "emitter_refs": note,
+    }
+
+
 def _summarise(rows, engine: str) -> None:
     by_cont: dict[str, int] = {}
     for r in rows:
@@ -505,7 +610,7 @@ def _summarise(rows, engine: str) -> None:
     for k, v in sorted(by_cont.items()):
         print(f"  {k:<13} {v}")
 
-    if engine == "qth-cli":
+    if engine in ("qth-cli", "report"):
         paths: dict[str, int] = {}
         for r in rows:
             paths[str(r.get("path"))] = paths.get(str(r.get("path")), 0) + 1
@@ -535,17 +640,23 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Predict what should be audible at a fixed location, "
                     "using sota-rf read-only.")
-    ap.add_argument("--engine", choices=("pipeline", "qth-cli"),
+    ap.add_argument("--engine", choices=("pipeline", "qth-cli", "report"),
                     default="pipeline",
                     help="pipeline: sota_rf_sources.py, ERP/d^2, no "
                          "terrain, lowest 40 channels per site, writes "
-                         "qth-prediction/1 (default, because qth_cli.mjs "
-                         "is not on sota-rf's mainline yet). qth-cli: the "
-                         "location report, with terrain, the FM pattern, "
-                         "the full channel list and model dBm, writes "
-                         "qth-prediction/2.")
-    ap.add_argument("--lat", type=float, required=True)
-    ap.add_argument("--lon", type=float, required=True)
+                         "qth-prediction/1 (default, because it is the "
+                         "engine that works with sota-rf's mainline). "
+                         "report: ingest a location report downloaded from "
+                         "the map UI -- no sota-rf checkout needed, and the "
+                         "volunteer path. qth-cli: run that report locally. "
+                         "Both of the latter write qth-prediction/2, with "
+                         "terrain, the FM pattern, the full channel list "
+                         "and model dBm.")
+    ap.add_argument("--lat", type=float,
+                    help="required for --engine pipeline and qth-cli; for "
+                         "--engine report it is read from the file and "
+                         "giving it here only cross-checks it")
+    ap.add_argument("--lon", type=float, help="see --lat")
     ap.add_argument("--bands", default="vhf_lmr_low,vhf_lmr_high,uhf_lmr,"
                                        "nwr,bcast_fm")
     ap.add_argument("--work-dir", default="./out/qth_prediction")
@@ -553,6 +664,14 @@ def main(argv=None) -> int:
     ap.add_argument("--reuse", action="store_true",
                     help="reuse an existing sota-rf output in --work-dir "
                          "instead of rerunning it")
+
+    rep = ap.add_argument_group("--engine report")
+    rep.add_argument("--report", default=None,
+                     help="the location report saved by the map UI's "
+                          "\"Download JSON\" button (named like "
+                          "qth-rfi-YYYY-MM-DD.json). Its own query block "
+                          "supplies the point, antenna height, reference "
+                          "gain, span and channel floor.")
 
     pipe = ap.add_argument_group("--engine pipeline")
     pipe.add_argument("--alt-m", type=float, default=0.0,
@@ -602,7 +721,49 @@ def main(argv=None) -> int:
     bands = resolve_bands(b.strip() for b in args.bands.split(",") if b.strip())
     work = Path(args.work_dir)
 
-    if args.engine == "pipeline":
+    if args.engine == "report":
+        if not args.report:
+            raise SystemExit(
+                "--engine report needs --report FILE: the JSON the map UI's "
+                "\"Download JSON\" button saved. See sota-rf "
+                "docs/volunteer/location-report-howto.html for the six "
+                "steps that produce it.")
+        report = Path(args.report)
+        data, query = read_report_query(report, args)
+        rows = parse_qth_report(report, bands)
+        meta = {
+            # From the file, not the command line: these describe the point
+            # the browser actually traced.
+            "lat": query["lat"], "lon": query["lon"],
+            "ant_agl_m": float(query["ant_agl_m"]),
+            "min_dbm": query.get("min_dbm"),
+            "ref_gain_dbi": query.get("ref_gain_dbi"),
+            # The span the REPORT was built over, which the how-to tells
+            # volunteers to leave blank (the whole span). Null means that,
+            # and must not be replaced by the band list: the server stores
+            # this as what was queried, and a narrower value would claim
+            # the report had never looked outside the surveyed bands.
+            "f_min_mhz": query.get("f_min_mhz"),
+            "f_max_mhz": query.get("f_max_mhz"),
+            "bands": [b.name for b in bands],
+            "qth_rfi_report": str(report),
+            "qth_rfi_schema": data.get("schema"),
+            "data_source": "downloaded from the map UI",
+            "terrain": (data.get("model") or {}).get("dem"),
+        }
+        prov = report_provenance(data, rows)
+        if prov["emitter_refs"]:
+            print(f"warning: {prov['emitter_refs']}", file=sys.stderr)
+        meta.update(prov)
+        out = write_prediction(rows, Path(args.out), meta,
+                               schema=_reference.PREDICTION_SCHEMA_V2,
+                               source="sota-rf location report, downloaded "
+                                      "from the map UI (read-only)",
+                               caveats=CAVEATS_V2,
+                               model=data.get("model"))
+    elif args.engine == "pipeline":
+        if args.lat is None or args.lon is None:
+            raise SystemExit("--engine pipeline needs --lat and --lon.")
         csv_path = work / f"{PSEUDO_ASSOCIATION}_rf_sources.csv"
         if not (args.reuse and csv_path.exists()):
             summits = write_pseudo_summit(work / "qth_summits.csv", args.lat,
@@ -616,6 +777,8 @@ def main(argv=None) -> int:
             "sota_rf_csv": str(csv_path),
         }, schema=_reference.PREDICTION_SCHEMA, caveats=CAVEATS_V1)
     else:
+        if args.lat is None or args.lon is None:
+            raise SystemExit("--engine qth-cli needs --lat and --lon.")
         ant_agl_m = _resolve_ant_agl(args)
         report = work / "qth_rfi_report.json"
         if not (args.reuse and report.exists()):
