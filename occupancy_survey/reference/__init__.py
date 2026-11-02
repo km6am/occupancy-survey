@@ -161,13 +161,69 @@ SUMMIT_CSV_HEADER: tuple[str, ...] = (
     "ActivationDate", "ActivationCall",
 )
 
-# The prediction file tools/qth_predict.py writes and
-# tools/validate_occupancy.py reads. Owned by THIS repo, unlike the two
-# above, so it is the one contract here that is authoritative.
+# sota-rf's location report (web/map/qth.js, web/map/qth_cli.mjs), as
+# emitted 2026-11-01 on branch qth-rfi-report. One row per channel per
+# emitter. Recorded in full for the same reason as the CSV above.
+QTH_RFI_SCHEMA = "sota-rf/qth-rfi/1"
+
+QTH_RFI_CHANNEL_FIELDS: tuple[str, ...] = (
+    "freq_mhz", "db", "ref", "call", "owner", "service", "lat", "lon",
+    "distance_m", "bearing_deg", "erp_w", "erp_basis", "vpat_gain_db",
+    "in_totals", "fspl_db", "diffraction_db", "path", "field_vm",
+    "p_dbm_ref", "error_db", "error_basis", "rank",
+)
+
+# LOAD-BEARING, and the reason to prefer this report over the pipeline CSV.
+#   freq_mhz    the channel being predicted
+#   service     the continuity class, via channels.continuity_for()
+#   field_vm    the field proxy, field_vm**2 / 30, which is the ordering
+#   p_dbm_ref   the model's own dBm, which is what makes the audibility
+#               floor frequency-aware instead of a bare proxy threshold
+#   path        'los' or 'diffracted' -- the residual split that
+#               DISCRIMINATES between a path-model error and a deaf
+#               receive chain. Rank agreement does not.
+# A report missing p_dbm_ref or path is a /1 prediction wearing a 2: it
+# would validate, and every /2-only conclusion drawn from it would be
+# unsupported. Hence a hard error rather than a None.
+QTH_RFI_REQUIRED_FIELDS: tuple[str, ...] = (
+    "freq_mhz", "service", "field_vm", "p_dbm_ref", "path",
+)
+
+# CARRIED THROUGH. Absent, a field goes None and nothing about the
+# measurement or the ordering changes.
+QTH_RFI_CARRIED_FIELDS: tuple[str, ...] = (
+    "ref", "call", "owner", "lat", "lon", "distance_m", "erp_w",
+    "erp_basis", "error_db", "rank", "in_totals",
+)
+
+# NEVER LEAVES THE LOCAL MACHINE. Two rows of distance and bearing to
+# emitters at known coordinates trilaterate the receiver, so these locate
+# the station as surely as its latitude does. Named here so the submit
+# path (and occupancy_survey.disclosure) can refuse them by name rather
+# than by anyone remembering the hazard.
+QTH_RFI_WITHHELD_FIELDS: tuple[str, ...] = (
+    "distance_m", "bearing_deg", "lat", "lon", "fspl_db",
+    "diffraction_db",
+)
+
+# The prediction files tools/qth_predict.py writes and
+# tools/validate_occupancy.py reads. Owned by THIS repo, unlike the three
+# above, so these are the contracts here that are authoritative.
+#   /1  the sota-rf pipeline CSV: ERP/d^2, no terrain, no frequency
+#   /2  the location report: terrain, FM pattern and the model's own dBm
+# Both carry field_proxy_w_per_m2 with the same meaning and units, which
+# is what lets one validator read either.
 PREDICTION_SCHEMA = "occupancy-survey/qth-prediction/1"
+PREDICTION_SCHEMA_V2 = "occupancy-survey/qth-prediction/2"
 
 
 def missing_sota_rf_columns(fieldnames) -> list[str]:
     """Required columns absent from a sota-rf CSV header."""
     present = {str(f).strip() for f in (fieldnames or ())}
     return [c for c in SOTA_RF_REQUIRED_COLUMNS if c not in present]
+
+
+def missing_qth_rfi_fields(row_keys) -> list[str]:
+    """Required fields absent from a qth-rfi channel row."""
+    present = {str(f).strip() for f in (row_keys or ())}
+    return [c for c in QTH_RFI_REQUIRED_FIELDS if c not in present]
