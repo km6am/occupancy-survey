@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plot_occupancy import _expand  # noqa: E402
 
 TICKS = (0, 1, 5, 10, 25, 50, 100)
+BAND_GAP_PX = 16
 
 
 def load(paths):
@@ -204,46 +205,66 @@ def plot_waterfall(datasets, bands, out_path, title, row_px=24):
     rows, m = channel_matrix(datasets, bands, keep_all=True)
     if not rows:
         return None
-    img_data = 100 * m.T                     # time down, channel across
     n_ch, n_t = len(rows), len(datasets)
     # One pixel per channel; a short targeted list gets a whole number of
     # pixels each instead, or 183 channels would be 183 pixels wide.
     ch_px = max(1, 900 // n_ch)
+
+    # Built at pixel resolution so bands can sit apart: a blank gap between
+    # them, which a divider line on abutting bands did not make readable.
+    x0 = []                                  # first pixel of each channel
+    x = 0
+    for i in range(n_ch):
+        if i and rows[i][0] != rows[i - 1][0]:
+            x += BAND_GAP_PX
+        x0.append(x)
+        x += ch_px
+    width = x
+    img = np.full((n_t, width), np.nan)
+    gap = np.ones(width, dtype=bool)
+    for i, xs in enumerate(x0):
+        img[:, xs:xs + ch_px] = 100 * m[i][:, None]
+        gap[xs:xs + ch_px] = False
+
     dpi = 100
     left, right, top, bottom = 110, 120, 50, 90      # margins, pixels
-    w_px = n_ch * ch_px + left + right
+    w_px = width + left + right
     h_px = n_t * row_px + top + bottom
     fig = plt.figure(figsize=(w_px / dpi, h_px / dpi), dpi=dpi)
     ax = fig.add_axes([left / w_px, bottom / h_px,
-                       n_ch * ch_px / w_px, n_t * row_px / h_px])
+                       width / w_px, n_t * row_px / h_px])
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad("#9a9a9a")
     norm = PowerNorm(gamma=0.5, vmin=0, vmax=100)
-    im = ax.imshow(img_data, aspect="auto", cmap=cmap, norm=norm,
-                   interpolation="nearest")
+    im = ax.imshow(img, aspect="auto", cmap=cmap, norm=norm,
+                   interpolation="nearest",
+                   extent=(0, width, n_t - 0.5, -0.5))
+    # Gaps are page, not "not covered" grey.
+    edges = np.flatnonzero(np.diff(np.r_[0, gap.astype(int), 0]))
+    for a, b in zip(edges[::2], edges[1::2]):
+        ax.axvspan(a, b, color="white", lw=0)
+    for side in ax.spines.values():
+        side.set_visible(False)
 
     # Ticks at round frequencies, wherever they fall in channel order.
     freqs = np.array([r[1] for r in rows]) / 1e6
-    n_ticks = max(2, min(12, n_ch * ch_px // 90))
+    n_ticks = max(2, min(12, width // 90))
     idx = np.unique(np.linspace(0, n_ch - 1, n_ticks).round().astype(int))
-    ax.set_xticks(idx, [f"{freqs[i]:.3f}" for i in idx], fontsize=7,
-                  rotation=90)
+    ax.set_xticks([x0[i] + ch_px / 2 for i in idx],
+                  [f"{freqs[i]:.3f}" for i in idx], fontsize=7, rotation=90)
     ax.set_xlabel("channel (MHz)")
     ax.set_yticks(range(n_t), column_labels(datasets), fontsize=7)
-    for i in range(1, n_ch):
-        if rows[i][0] != rows[i - 1][0]:
-            ax.axvline(i - 0.5, color="white", lw=0.8)
     if len(bands) > 1:
         starts = [i for i in range(n_ch)
                   if i == 0 or rows[i][0] != rows[i - 1][0]]
         # Staggered: a narrow band (NWR is six channels) would put its
         # name on top of the next band's.
         for k, i in enumerate(starts):
-            ax.text(i + 2, -0.6 - 0.55 * (k % 2), rows[i][0], fontsize=7,
+            ax.text(x0[i], -0.6 - 0.55 * (k % 2), rows[i][0], fontsize=7,
                     va="bottom", color="#333333")
     ax.set_title(f"{title} -- {n_ch} channels, {ch_px} px each", loc="left",
                  fontsize=9, pad=22 if len(bands) > 1 else 4)
-    cax = fig.add_axes([(left + n_ch * ch_px + 15) / w_px, bottom / h_px,
+    cax = fig.add_axes([(left + width + 15) / w_px, bottom / h_px,
                         12 / w_px, n_t * row_px / h_px])
     cb = fig.colorbar(im, cax=cax, ticks=TICKS)
     cb.set_label("carrier present (%)", fontsize=8)
