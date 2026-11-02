@@ -32,6 +32,7 @@ import argparse
 import gzip
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -42,15 +43,41 @@ SCHEMA = "sota-rf/qth-feedback/1"
 PREDICTION_FIELDS = ("freq_mhz", "ref", "db", "service", "p_dbm_ref",
                      "error_db", "path", "rank")
 
-# Refused by the server anywhere in the body, and refused here before it
-# ever gets that far. Kept as its own tuple rather than derived, so a
-# change in the prediction's shape cannot quietly shrink it.
-FORBIDDEN_FIELDS = ("distance_m", "bearing_deg", "lat", "lon", "fspl_db",
-                    "diffraction_db", "rf_lat", "rf_lon", "latitude",
-                    "longitude", "operator_note")
+# The server's own GEOMETRY_KEYS, copied from rf_feedback.find_geometry().
+# It walks the whole body and rejects the first of these it finds at any
+# depth, so these are hard refusals on the wire.
+SERVER_GEOMETRY_KEYS = ("distance_m", "bearing_deg", "lat", "lon",
+                        "latitude", "longitude", "fspl_db",
+                        "diffraction_db")
 
-MAX_ROWS = 100_000
-MAX_GZIP_BYTES = 2_000_000
+# What THIS tool refuses: the server's set plus three it does not know
+# about. rf_lat/rf_lon are what a /2 prediction actually calls an emitter's
+# coordinates, so the server would accept them -- being stricter than the
+# endpoint is the right direction for a tool that runs on the operator's
+# machine. operator_note is free text, and free text holds addresses.
+FORBIDDEN_FIELDS = SERVER_GEOMETRY_KEYS + ("rf_lat", "rf_lon",
+                                           "operator_note")
+
+# rf_feedback.PATHS. Four classes, not two: a path this tool has never
+# seen would be silently nulled by the server, so they are listed.
+SERVER_PATHS = ("los-assumed", "los", "diffracted", "no-dem")
+
+# rf_feedback.SOURCE_DBS. Anything else is nulled server-side.
+SERVER_SOURCE_DBS = ("ULS", "ASR", "FM", "TV", "AM", "NOAA")
+
+# rf_feedback.prediction.rules, read as four numbers.
+SERVER_RULE_KEYS = ("inclusion_w_m2", "cap_m", "los_assumed_within_m",
+                    "min_distance_m")
+
+# rf_feedback.GRID_RE
+GRID_RE = re.compile(r"^[A-R]{2}[0-9]{2}([A-X]{2})?$", re.I)
+
+# Exact server values, not the proposal's rounded prose. "2 MB" there is
+# 2 MiB in the code, and being stricter by 97 KB would have refused bodies
+# the endpoint accepts.
+MAX_ROWS = 100_000                      # rf_feedback.SURVEY_MAX_ROWS
+MAX_GZIP_BYTES = 2 * 1024 * 1024        # SURVEY_MAX_BODY, on the wire
+MAX_INFLATED_BYTES = 16 * 1024 * 1024   # SURVEY_MAX_INFLATED, after gunzip
 
 
 # --------------------------------------------------------------------------- #
@@ -178,9 +205,15 @@ def acquisition_block(datasets, grid, grid_note,
     acq = datasets[0]["acquisition"]
     site = acq["site"]
 
-    bins = sorted({int(b["bins_per_channel"])
+    # The server reads bins_per_channel as a single NUMBER, not a list.
+    # Pooling across different channel widths means different baseline
+    # elevation -- MergedChannel.comparable already flags it -- so a
+    # disagreement is sent as null rather than as one of the values
+    # pretending to describe all of them.
+    seen = sorted({int(b["bins_per_channel"])
                    for d in datasets for b in d.get("bands", {}).values()
                    if b.get("bins_per_channel") is not None})
+    bins = seen[0] if len(seen) == 1 else None
 
     hours = 0.0
     from datetime import datetime
@@ -217,12 +250,18 @@ def acquisition_block(datasets, grid, grid_note,
             "antenna_height_m": site.get("antenna_height_m"),
             "grid_square": grid,
             "location_precision": grid_note,
+            # Also here, not only under receiver: clean_acquisition reads
+            # both, and it checks BOTH for the literal "synthetic" when
+            # deciding whether to refuse the dataset.
+            "receiver_model": site.get("receiver_model"),
             "preamp": site.get("preamp"),
             "feedline": site.get("feedline"),
             "front_end_filters": site.get("front_end_filters"),
         },
-        "hours": round(hours, 3),
-        "intervals": len(datasets),
+        # TEXT on the server (txt(), max 40 chars), which raises on a
+        # number. Sent as a numeric string so it stays parseable.
+        "hours": f"{hours:.3f}",
+        "intervals": int(len(datasets)),
         "bins_per_channel": bins,
         # false means NOT EVIDENCED, not clean. An unchecked front end
         # inflates occupancy on predicted-strong channels, which is the
@@ -258,7 +297,13 @@ def body_size(body) -> dict:
 
 
 def check(body) -> list[str]:
-    """Everything that would make the server refuse, checked here first."""
+    """Everything that would make the server refuse, checked here first.
+
+    Mirrors rf_feedback.clean_survey() and clean_acquisition(): each entry
+    corresponds to a `need()`, a range, a cap or an explicit raise there.
+    Checking locally turns a 400 with one message into a list the operator
+    can act on, and keeps a body that cannot be accepted off the wire.
+    """
     problems = []
 
     leaks = forbidden_in(body)
@@ -269,28 +314,67 @@ def check(body) -> list[str]:
             + ". These locate the receiver; the server refuses them and so "
               "does this tool.")
 
-    acq = body.get("acquisition") or {}
+    if body.get("schema") != SCHEMA:
+        problems.append(f"schema must be {SCHEMA}")
+
+    pred = body.get("prediction") or {}
+    for field in ("engine", "data", "ant_agl_m"):
+        if pred.get(field) in (None, ""):
+            problems.append(
+                f"prediction.{field} is required by the server and is "
+                f"missing. All three come from a /2 prediction: a /1 file "
+                f"has no model header and no antenna height, so it cannot "
+                f"be submitted. Regenerate with "
+                f"`qth_predict.py --engine qth-cli`.")
+
+    ant = pred.get("ant_agl_m")
+    if ant is not None and not (0 <= float(ant) <= 300):
+        problems.append(f"prediction.ant_agl_m {ant} is outside 0-300 m")
+
+    acq = (body.get("measured") or {}).get("acquisition") or {}
     if (acq.get("receiver") or {}).get("agc_enabled"):
         problems.append(
             "agc_enabled is true. An AGC moves the noise floor every "
             "threshold is relative to, so the duty cycles are not "
             "interpretable.")
 
-    for path in (("detection", "threshold_db"), ("receiver", "gain"),
-                 ("sampling", "dwell_s"), ("site", "antenna")):
-        if (acq.get(path[0]) or {}).get(path[1]) in (None, ""):
-            problems.append(f"acquisition.{path[0]}.{path[1]} is missing; "
-                            f"the server refuses a body without it.")
+    # clean_acquisition refuses the literal "synthetic" in any of these.
+    rx, site = acq.get("receiver") or {}, acq.get("site") or {}
+    if "synthetic" in (rx.get("receiver_model"), rx.get("backend"),
+                       site.get("receiver_model")):
+        problems.append("synthetic dataset: refused as a model check.")
 
-    grid = (acq.get("site") or {}).get("grid_square")
-    if grid and len(str(grid)) > 6:
-        problems.append(f"grid square {grid!r} is longer than 6 characters.")
+    for group, field in (("detection", "threshold_db"),
+                         ("receiver", "gain"), ("sampling", "dwell_s")):
+        if (acq.get(group) or {}).get(field) in (None, ""):
+            problems.append(f"measured.acquisition.{group}.{field} is "
+                            f"required; the server refuses a body without "
+                            f"it.")
+    if site.get("antenna") in (None, ""):
+        problems.append("measured.acquisition.site.antenna is required; a "
+                        "quiet channel and a deaf receiver read the same.")
 
-    for name in ("predicted", "measured"):
-        rows = body.get(name) or []
-        if len(rows) > MAX_ROWS:
+    for where, value in (("location.grid", (body.get("location") or {})
+                          .get("grid")),
+                         ("measured.acquisition.site.grid_square",
+                          site.get("grid_square"))):
+        if value and not GRID_RE.match(str(value)):
             problems.append(
-                f"{name} has {len(rows)} rows, over the {MAX_ROWS} cap. "
+                f"{where} {value!r} is not a 4- or 6-character Maidenhead "
+                f"locator.")
+
+    # Both lists must be non-empty: rf_feedback.rows() raises on an empty
+    # one, so a run that matched nothing is a local refusal, not a 400.
+    for name, rows_ in (("prediction.channels", pred.get("channels")),
+                        ("measured.channels",
+                         (body.get("measured") or {}).get("channels"))):
+        if not rows_:
+            problems.append(
+                f"{name} is empty. There is nothing to submit -- check the "
+                f"band filter and --min-decided.")
+        elif len(rows_) > MAX_ROWS:
+            problems.append(
+                f"{name} has {len(rows_)} rows, over the {MAX_ROWS} cap. "
                 f"Select with tools/make_channel_list.py --top-per-band "
                 f"rather than sending everything.")
 
@@ -298,7 +382,14 @@ def check(body) -> list[str]:
     if size["gzip_bytes"] > MAX_GZIP_BYTES:
         problems.append(
             f"body is {size['gzip_bytes']/1e6:.2f} MB gzipped, over the "
-            f"{MAX_GZIP_BYTES/1e6:.1f} MB limit.")
+            f"{MAX_GZIP_BYTES/1048576:.0f} MiB on-the-wire limit.")
+    if size["json_bytes"] > MAX_INFLATED_BYTES:
+        problems.append(
+            f"body is {size['json_bytes']/1e6:.2f} MB uncompressed, over "
+            f"the {MAX_INFLATED_BYTES/1048576:.0f} MiB the server will inflate "
+            f"to. At full row counts this is the tighter of the two: a "
+            f"100,000-row list measures about 15.5 MB, 92% of the inflate "
+            f"limit, while gzipping to only 1.6 MB of the 2 MiB allowed.")
     return problems
 
 
@@ -320,24 +411,50 @@ def disclosure_problems(body) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def build_body(prediction, measured, datasets, bands=None,
-               intermod_checked: bool = False) -> dict:
+               intermod_checked: bool = False, notes=None) -> dict:
+    """The body rf_feedback.clean_survey() accepts.
+
+    THE SHAPE IS THE SERVER'S, not this repo's. An earlier version of this
+    tool was built from the proposal's prose and nested everything
+    differently -- model/, acquisition/, predicted[], measured[] -- which
+    clean_survey() would have rejected on the first required field. The
+    validator is the contract; the prose was a sketch of it.
+    """
     grid, grid_note = grid_for_submission(
         datasets[0]["acquisition"]["site"].get("grid_square"))
     model = prediction.get("model") or {}
+    rules = model.get("rules") or {}
+    query = prediction.get("query") or {}
     return {
         "schema": SCHEMA,
-        "prediction_schema": prediction.get("schema"),
-        # Which model built the prediction these measurements are being
-        # compared with. A model change changes every prediction, so a
-        # submission without this cannot be re-read later.
-        "model": {"engine": model.get("engine"), "data": model.get("data"),
-                  "dem": model.get("dem")},
-        "acquisition": acquisition_block(datasets, grid, grid_note,
-                                         intermod_checked),
-        "predicted": prediction_rows(prediction, bands),
-        "measured": measured_rows(
-            measured, bands,
-            datasets[0]["acquisition"].get("histogram")),
+        "location": {"grid": grid},
+        # Which model built the prediction these measurements are compared
+        # with. A model change changes every prediction, so a submission
+        # without engine and data cannot be re-read later -- which is why
+        # the server requires both.
+        "prediction": {
+            "schema": prediction.get("schema"),
+            "engine": model.get("engine"),
+            "data": model.get("data"),
+            "dem": model.get("dem"),
+            "ant_agl_m": query.get("ant_agl_m"),
+            "ref_gain_dbi": query.get("ref_gain_dbi"),
+            "f_min_mhz": query.get("f_min_mhz"),
+            "f_max_mhz": query.get("f_max_mhz"),
+            "rules": {k: rules.get(k) for k in SERVER_RULE_KEYS},
+            "channels": prediction_rows(prediction, bands),
+        },
+        "measured": {
+            "acquisition": acquisition_block(datasets, grid, grid_note,
+                                             intermod_checked),
+            "channels": measured_rows(
+                measured, bands,
+                datasets[0]["acquisition"].get("histogram")),
+        },
+        # Left empty unless the operator asks for it. Free text is where an
+        # address ends up, and the server keeps this field (it drops
+        # operator_note, which is a different one).
+        "notes": notes or None,
     }
 
 
@@ -388,6 +505,10 @@ def main(argv=None) -> int:
                     help="submit even though a checked band had suspect "
                          "channels. Those occupancy figures may be "
                          "inflated by the receiver's own products.")
+    ap.add_argument("--notes", default=None,
+                    help="free-text note for the maintainer, up to 2000 "
+                         "characters. Empty by default: free text is where "
+                         "an address ends up, so this is opt-in.")
     ap.add_argument("--out", default="./out/qth_feedback.json",
                     help="where the dry-run body is written")
     ap.add_argument("--endpoint", default=ENDPOINT)
@@ -432,7 +553,8 @@ def main(argv=None) -> int:
         bands = {b.strip() for b in args.bands.split(",") if b.strip()}
 
     body = build_body(prediction, measured, datasets, bands,
-                      intermod_checked=intermod["supplied"])
+                      intermod_checked=intermod["supplied"],
+                      notes=args.notes)
 
     problems = check(body) + disclosure_problems(body)
     size = body_size(body)
@@ -442,21 +564,24 @@ def main(argv=None) -> int:
     out_path.write_text(json.dumps(body, indent=1, allow_nan=False),
                         encoding="utf-8")
 
+    pred, acq = body["prediction"], body["measured"]["acquisition"]
     print(f"wrote {out_path}")
     print(f"  schema          {body['schema']}")
-    print(f"  prediction      {body['prediction_schema']}  "
-          f"engine {body['model']['engine']}")
+    print(f"  prediction      {pred['schema']}  engine {pred['engine']}  "
+          f"data {pred['data']}")
+    print(f"  antenna         {pred['ant_agl_m']} m above ground")
     print(f"  location        "
-          f"{body['acquisition']['site']['grid_square'] or 'withheld'} "
-          f"({body['acquisition']['site']['location_precision']})")
-    print(f"  predicted rows  {len(body['predicted'])}")
-    print(f"  measured rows   {len(body['measured'])}")
-    print(f"  hours           {body['acquisition']['hours']}")
+          f"{body['location']['grid'] or 'withheld'} "
+          f"({acq['site']['location_precision']})")
+    print(f"  predicted rows  {len(pred['channels'])}")
+    print(f"  measured rows   {len(body['measured']['channels'])}")
+    print(f"  hours           {acq['hours']}")
     print(f"  intermod        "
-          f"{'checked' if body['acquisition']['intermod_checked'] else 'NOT EVIDENCED'}")
-    print(f"  size            {size['json_bytes']/1e6:.2f} MB json, "
+          f"{'checked' if acq['intermod_checked'] else 'NOT EVIDENCED'}")
+    print(f"  size            {size['json_bytes']/1e6:.2f} MB json "
+          f"(limit {MAX_INFLATED_BYTES/1048576:.0f} MiB), "
           f"{size['gzip_bytes']/1e6:.3f} MB gzipped "
-          f"(limit {MAX_GZIP_BYTES/1e6:.1f})")
+          f"(limit {MAX_GZIP_BYTES/1048576:.0f} MiB)")
 
     if problems:
         print("\nREFUSING TO SEND:", file=sys.stderr)

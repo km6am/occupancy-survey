@@ -47,11 +47,19 @@ def _pred_channel(freq_hz, proxy, **kw):
     return row
 
 
-def _prediction(*channels):
-    return {"schema": "occupancy-survey/qth-prediction/2",
+def _prediction(*channels, **over):
+    pred = {"schema": "occupancy-survey/qth-prediction/2",
             "model": {"engine": "node-abc1234567", "data": "2026-11-01",
-                      "dem": 'SRTM 2"'},
+                      "dem": 'SRTM 2"',
+                      "rules": {"inclusion_w_m2": 1e-4, "cap_m": 120000,
+                                "los_assumed_within_m": 1000,
+                                "min_distance_m": 30}},
+            "query": {"lat": 40.0, "lon": -120.0, "ant_agl_m": 10.0,
+                      "ref_gain_dbi": 0.0, "f_min_mhz": 88.1,
+                      "f_max_mhz": 470.0},
             "channels": list(channels)}
+    pred.update(over)
+    return pred
 
 
 HIST = {"lo_db": 0.0, "bin_db": 1.0, "n_bins": 40}
@@ -260,29 +268,81 @@ class TestBuildBody(unittest.TestCase):
         self.assertNotIn("Elm Street", json.dumps(body))
 
     def test_the_model_header_travels_with_the_measurements(self):
-        body = self._body()
-        self.assertEqual(body["model"]["engine"], "node-abc1234567")
-        self.assertEqual(body["prediction_schema"],
+        """The server REQUIRES engine and data: a submission without them
+        cannot be re-read after a model change."""
+        pred = self._body()["prediction"]
+        self.assertEqual(pred["engine"], "node-abc1234567")
+        self.assertEqual(pred["data"], "2026-11-01")
+        self.assertEqual(pred["schema"],
                          "occupancy-survey/qth-prediction/2")
 
-    def test_hours_come_from_the_interval_timestamps(self):
-        self.assertAlmostEqual(self._body()["acquisition"]["hours"], 1.0)
+    def test_the_antenna_height_comes_from_the_prediction_query(self):
+        """Also required by the server, and only a /2 file has it."""
+        self.assertEqual(self._body()["prediction"]["ant_agl_m"], 10.0)
 
-    def test_receiver_model_moves_from_site_to_receiver(self):
-        """Where the qth-feedback schema puts it, not where the dataset
-        does."""
-        acq = self._body()["acquisition"]
+    def test_the_queried_span_and_rules_are_carried(self):
+        pred = self._body()["prediction"]
+        self.assertEqual((pred["f_min_mhz"], pred["f_max_mhz"]),
+                         (88.1, 470.0))
+        self.assertEqual(set(pred["rules"]), set(sf.SERVER_RULE_KEYS))
+        self.assertEqual(pred["rules"]["cap_m"], 120000)
+
+    def test_the_shape_is_the_servers_not_this_repos(self):
+        """An earlier version nested these differently and would have been
+        rejected on the first required field."""
+        body = self._body()
+        self.assertEqual(set(body),
+                         {"schema", "location", "prediction", "measured",
+                          "notes"})
+        self.assertIn("grid", body["location"])
+        self.assertIn("channels", body["prediction"])
+        self.assertEqual(set(body["measured"]), {"acquisition", "channels"})
+        for gone in ("model", "predicted", "prediction_schema",
+                     "acquisition"):
+            self.assertNotIn(gone, body, gone)
+
+    def test_hours_come_from_the_interval_timestamps(self):
+        """TEXT on the server -- txt() raises on a number."""
+        hours = self._body()["measured"]["acquisition"]["hours"]
+        self.assertIsInstance(hours, str)
+        self.assertAlmostEqual(float(hours), 1.0)
+
+    def test_bins_per_channel_is_a_scalar_not_a_list(self):
+        """The server reads it with num(), which raises on a list."""
+        bins = self._body()["measured"]["acquisition"]["bins_per_channel"]
+        self.assertEqual(bins, 16)
+
+    def test_mixed_channel_widths_send_null_rather_than_one_of_them(self):
+        a, b = _dataset(), _dataset()
+        b["bands"]["vhf_lmr_low"]["bins_per_channel"] = 32
+        body = sf.build_body(_prediction(_pred_channel(155e6, 1e-3)),
+                             _measured(155e6, 0.4), [a, b])
+        self.assertIsNone(
+            body["measured"]["acquisition"]["bins_per_channel"])
+
+    def test_notes_are_empty_unless_asked_for(self):
+        self.assertIsNone(self._body()["notes"])
+
+    def test_receiver_model_is_sent_in_both_places(self):
+        """clean_acquisition reads rx.receiver_model AND
+        site.receiver_model, and checks both for the literal
+        "synthetic" when deciding whether to refuse the dataset."""
+        acq = self._body()["measured"]["acquisition"]
         self.assertEqual(acq["receiver"]["receiver_model"], "RSPdx")
-        self.assertNotIn("receiver_model", acq["site"])
+        self.assertEqual(acq["site"]["receiver_model"], "RSPdx")
 
     def test_intermod_unchecked_is_false_and_means_not_evidenced(self):
-        self.assertFalse(self._body()["acquisition"]["intermod_checked"])
+        self.assertFalse(
+            self._body()["measured"]["acquisition"]["intermod_checked"])
 
     def test_an_eight_character_grid_is_withheld_from_the_body(self):
         body = self._body(grid="CM87uk12")
-        self.assertIsNone(body["acquisition"]["site"]["grid_square"])
-        self.assertIn("withheld",
-                      body["acquisition"]["site"]["location_precision"])
+        self.assertIsNone(body["location"]["grid"])
+        self.assertIsNone(
+            body["measured"]["acquisition"]["site"]["grid_square"])
+        self.assertIn(
+            "withheld",
+            body["measured"]["acquisition"]["site"]["location_precision"])
 
 
 class TestCheck(unittest.TestCase):
@@ -299,36 +359,67 @@ class TestCheck(unittest.TestCase):
         problems = sf.check(self._body(agc=True))
         self.assertTrue(any("agc_enabled" in p for p in problems))
 
+    def test_a_synthetic_receiver_model_is_refused(self):
+        problems = sf.check(self._body(receiver_model="synthetic"))
+        self.assertTrue(any("synthetic" in p for p in problems))
+
     def test_a_missing_gain_is_refused(self):
         body = self._body()
-        body["acquisition"]["receiver"]["gain"] = None
+        body["measured"]["acquisition"]["receiver"]["gain"] = None
         self.assertTrue(any("receiver.gain" in p for p in sf.check(body)))
 
     def test_a_missing_antenna_is_refused(self):
         body = self._body()
-        body["acquisition"]["site"]["antenna"] = ""
+        body["measured"]["acquisition"]["site"]["antenna"] = ""
         self.assertTrue(any("site.antenna" in p for p in sf.check(body)))
 
     def test_a_long_locator_is_refused_if_it_got_in(self):
         body = self._body()
-        body["acquisition"]["site"]["grid_square"] = "CM87uk12"
-        self.assertTrue(any("6 characters" in p for p in sf.check(body)))
+        body["location"]["grid"] = "CM87uk12"
+        self.assertTrue(any("Maidenhead" in p for p in sf.check(body)))
+
+    def test_a_prediction_without_a_model_header_is_refused(self):
+        """A /1 file has no engine, data or antenna height, all three of
+        which the server requires."""
+        body = sf.build_body(
+            {"schema": "occupancy-survey/qth-prediction/1",
+             "channels": [_pred_channel(155e6, 1e-3)]},
+            _measured(155e6, 0.4), [_dataset()])
+        problems = sf.check(body)
+        for field in ("engine", "data", "ant_agl_m"):
+            self.assertTrue(any(f"prediction.{field}" in p
+                                for p in problems), field)
+        self.assertTrue(any("--engine qth-cli" in p for p in problems))
+
+    def test_an_empty_channel_list_is_refused_before_the_wire(self):
+        """rf_feedback.rows() raises on an empty list, so a run that
+        matched nothing is a local refusal rather than a 400."""
+        body = self._body()
+        body["prediction"]["channels"] = []
+        self.assertTrue(any("nothing to submit" in p
+                            for p in sf.check(body)))
 
     def test_an_injected_forbidden_field_is_caught(self):
         body = self._body()
-        body["predicted"][0]["distance_m"] = 5000.0
+        body["prediction"]["channels"][0]["distance_m"] = 5000.0
         problems = sf.check(body)
         self.assertTrue(any("forbidden" in p for p in problems))
-        self.assertTrue(any("$.predicted[0].distance_m" in p
-                            for p in problems),
-                        "the refusal must name where the leak is")
+        self.assertTrue(
+            any("$.prediction.channels[0].distance_m" in p
+                for p in problems),
+            "the refusal must name where the leak is")
 
     def test_over_the_row_cap_is_refused_and_names_the_way_out(self):
         body = self._body()
-        body["predicted"] = [{"freq_mhz": 150.0 + i * 1e-4}
-                             for i in range(sf.MAX_ROWS + 1)]
+        body["prediction"]["channels"] = [
+            {"freq_mhz": 150.0 + i * 1e-4} for i in range(sf.MAX_ROWS + 1)]
         problems = sf.check(body)
         self.assertTrue(any("--top-per-band" in p for p in problems))
+
+    def test_the_forbidden_set_covers_the_servers_own(self):
+        """Stricter is fine; missing one is not."""
+        for k in sf.SERVER_GEOMETRY_KEYS:
+            self.assertIn(k, sf.FORBIDDEN_FIELDS, k)
 
 
 class TestDisclosure(unittest.TestCase):
@@ -434,7 +525,8 @@ class TestMainDryRun(unittest.TestCase):
             sf.post = original
         self.assertEqual(body["schema"], sf.SCHEMA)
         self.assertEqual(sf.forbidden_in(body), [])
-        self.assertEqual(len(body["predicted"]), 1)
+        self.assertEqual(len(body["prediction"]["channels"]), 1)
+        self.assertEqual(len(body["measured"]["channels"]), 1)
 
     def test_a_callsign_site_id_makes_main_refuse(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -490,7 +582,125 @@ class TestMainDryRun(unittest.TestCase):
             sf.main(["--prediction", pred, ds, "--intermod-report", str(im),
                      "--out", str(out)])
             body = json.loads(out.read_text(encoding="utf-8"))
-        self.assertTrue(body["acquisition"]["intermod_checked"])
+        self.assertTrue(
+            body["measured"]["acquisition"]["intermod_checked"])
+
+
+def _server_validator():
+    """rf_feedback.clean_survey from a local sota-rf checkout, or None.
+
+    It lives on sota-rf branch qth-rfi-report and is not deployed, so this
+    is best-effort: the test skips when it is absent rather than pretending
+    the contract was checked.
+    """
+    import importlib.util
+    import os
+    roots = []
+    env = os.environ.get("SOTA_RF_DIR")
+    if env:
+        roots.append(Path(env).expanduser())
+    roots.append(Path.home() / "sota-rf")
+    candidates = []
+    for root in roots:
+        candidates.append(root / "deploy" / "droplet" / "rf_feedback.py")
+        candidates.extend(sorted(
+            root.glob(".claude/worktrees/*/deploy/droplet/rf_feedback.py")))
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "rf_feedback_under_test", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        if hasattr(mod, "clean_survey"):
+            return mod
+    return None
+
+
+SERVER = _server_validator()
+
+
+@unittest.skipIf(SERVER is None,
+                 "no local sota-rf rf_feedback.py to validate against")
+class TestAgainstTheServersOwnValidator(unittest.TestCase):
+    """The contract test. Everything else here is this repo agreeing with
+    itself; this is the only test that can tell us the body would actually
+    be accepted.
+
+    It is skipped when the sota-rf checkout is absent, which means a green
+    run does NOT prove the shape is right. That is why the skip says so.
+    """
+
+    def _body(self, **kw):
+        return sf.build_body(
+            _prediction(_pred_channel(155e6, 1e-3),
+                        _pred_channel(156e6, 1e-5, path="diffracted")),
+            {**_measured(155e6, 0.4), **_measured(156e6, 0.0)},
+            [_dataset(**kw)])
+
+    def test_the_server_accepts_a_body_this_tool_builds(self):
+        cleaned = SERVER.clean_survey(self._body())
+        self.assertEqual(cleaned["schema"], sf.SCHEMA)
+        self.assertEqual(len(cleaned["prediction"]["channels"]), 2)
+        self.assertEqual(len(cleaned["measured"]["channels"]), 2)
+
+    def test_the_required_fields_survive_the_round_trip(self):
+        cleaned = SERVER.clean_survey(self._body())
+        p = cleaned["prediction"]
+        self.assertEqual(p["engine"], "node-abc1234567")
+        self.assertEqual(p["data"], "2026-11-01")
+        self.assertEqual(p["ant_agl_m"], 10.0)
+        self.assertEqual(cleaned["location"]["grid"], "CM87")
+        acq = cleaned["measured"]["acquisition"]
+        self.assertEqual(acq["detection"]["threshold_db"], 10.0)
+        self.assertEqual(acq["site"]["antenna"], "discone")
+
+    def test_our_path_classes_are_ones_the_server_keeps(self):
+        """A path outside its PATHS tuple is silently nulled, so the
+        residual would lose its class rather than erroring."""
+        cleaned = SERVER.clean_survey(self._body())
+        paths = {r["path"] for r in cleaned["prediction"]["channels"]}
+        self.assertEqual(paths, {"los", "diffracted"})
+        self.assertEqual(tuple(SERVER.PATHS), sf.SERVER_PATHS)
+
+    def test_our_copies_of_its_enumerations_match(self):
+        self.assertEqual(tuple(SERVER.SOURCE_DBS), sf.SERVER_SOURCE_DBS)
+        self.assertEqual(set(SERVER.GEOMETRY_KEYS),
+                         set(sf.SERVER_GEOMETRY_KEYS))
+        self.assertEqual(SERVER.SURVEY_MAX_ROWS, sf.MAX_ROWS)
+        self.assertEqual(SERVER.SURVEY_MAX_BODY, sf.MAX_GZIP_BYTES)
+        self.assertEqual(SERVER.SURVEY_MAX_INFLATED, sf.MAX_INFLATED_BYTES)
+        self.assertEqual(SERVER.SURVEY_SCHEMA, sf.SCHEMA)
+
+    def test_the_db_code_is_one_it_keeps(self):
+        cleaned = SERVER.clean_survey(self._body())
+        self.assertEqual({r["db"] for r in cleaned["prediction"]["channels"]},
+                         {"ULS"})
+
+    def test_it_refuses_a_body_carrying_geometry(self):
+        """Confirms the server's net is real, not just ours."""
+        body = self._body()
+        body["prediction"]["channels"][0]["distance_m"] = 5000.0
+        with self.assertRaises(SERVER.Bad):
+            SERVER.clean_survey(body)
+
+    def test_it_refuses_an_agc_body(self):
+        with self.assertRaises(SERVER.Bad):
+            SERVER.clean_survey(self._body(agc=True))
+
+    def test_it_refuses_a_synthetic_body(self):
+        with self.assertRaises(SERVER.Bad):
+            SERVER.clean_survey(self._body(receiver_model="synthetic"))
+
+    def test_everything_our_check_passes_the_server_also_accepts(self):
+        """The two must not disagree: a body we call clean and it rejects
+        is a 400 the operator cannot act on."""
+        body = self._body()
+        self.assertEqual(sf.check(body), [])
+        SERVER.clean_survey(body)
 
 
 class TestTokenHandling(unittest.TestCase):

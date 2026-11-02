@@ -316,7 +316,21 @@ by name:
 
 The body is then scanned a second time for the forbidden names at any
 depth, and a third time by `occupancy_survey.disclosure` — belt and braces,
-because an allowlist is only as good as the code applying it.
+because an allowlist is only as good as the code applying it. This tool's
+forbidden set is a strict superset of the server's `GEOMETRY_KEYS`: it also
+refuses `rf_lat` / `rf_lon`, which is what a `/2` prediction actually calls
+an emitter's coordinates, and `operator_note`.
+
+**The body's shape is the server's**, taken from `rf_feedback.clean_survey()`
+rather than from prose: `location.grid`, `prediction.{engine, data,
+ant_agl_m, …, channels[]}`, `measured.{acquisition, channels[]}`. `engine`,
+`data` and `ant_agl_m` are *required*, and all three exist only in a `/2`
+file — so a `/1` prediction cannot be submitted, and the tool says so
+instead of sending a body that would 400.
+
+When a local `sota-rf` checkout is present, the test suite runs a built body
+through that very validator. It is skipped when the checkout is absent, so a
+green run on its own does **not** prove the shape is right.
 
 `rank` is **1..N over the rows actually sent**, by field proxy. It is
 deliberately not the report's own rank, which is computed over the whole
@@ -344,12 +358,21 @@ threshold, gain, dwell or antenna is missing, or when either list exceeds
 argument, which lands in shell history; not a query string, which the
 server logs.
 
-> **Measured 2026-11-01:** Oakland's 69,751-row predicted list with 10,000
-> measured rows gzips to **1.17 MB**, and a full 100,000-row list to
-> **1.62 MB** — both inside the 2 MB limit, so the row cap is what binds.
-> These used random references and floats, which compress *worse* than real
-> data (real licences cluster by holder and sit on a channel grid), so they
-> are upper bounds.
+> **Measured 2026-11-01.** The server caps a body at 2 MiB on the wire and
+> 16 MiB after gunzip, with 100,000 rows per list.
+>
+> | predicted | measured | uncompressed | gzipped |
+> |---|---|---|---|
+> | 69,751 | 10,000 | 11.10 MB | 1.17 MB |
+> | 100,000 | 10,000 | 15.46 MB | 1.62 MB |
+>
+> So at full row counts the **uncompressed** limit is the tighter one —
+> 15.46 MB is 92% of 16 MiB, while the gzipped body uses only 1.62 of
+> 2 MiB. Oakland fits comfortably either way.
+>
+> These rows use random references and floats, which compress *worse* than
+> real data (real licences cluster by holder and sit on a channel grid), so
+> they are upper bounds — the safe direction.
 
 ### What this cannot hide
 
