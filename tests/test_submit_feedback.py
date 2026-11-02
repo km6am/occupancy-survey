@@ -17,6 +17,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+try:                                    # pytest, from the repo root
+    from tests import server_contract
+except ImportError:                     # python tests/test_x.py
+    import server_contract
+
 
 def _load(name):
     spec = importlib.util.spec_from_file_location(
@@ -586,45 +591,11 @@ class TestMainDryRun(unittest.TestCase):
             body["measured"]["acquisition"]["intermod_checked"])
 
 
-def _server_validator():
-    """rf_feedback.clean_survey from a local sota-rf checkout, or None.
-
-    It lives on sota-rf branch qth-rfi-report and is not deployed, so this
-    is best-effort: the test skips when it is absent rather than pretending
-    the contract was checked.
-    """
-    import importlib.util
-    import os
-    roots = []
-    env = os.environ.get("SOTA_RF_DIR")
-    if env:
-        roots.append(Path(env).expanduser())
-    roots.append(Path.home() / "sota-rf")
-    candidates = []
-    for root in roots:
-        candidates.append(root / "deploy" / "droplet" / "rf_feedback.py")
-        candidates.extend(sorted(
-            root.glob(".claude/worktrees/*/deploy/droplet/rf_feedback.py")))
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "rf_feedback_under_test", path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-        except Exception:
-            continue
-        if hasattr(mod, "clean_survey"):
-            return mod
-    return None
-
-
-SERVER = _server_validator()
+SERVER = server_contract.SERVER
 
 
 @unittest.skipIf(SERVER is None,
-                 "no local sota-rf rf_feedback.py to validate against")
+                 server_contract.SKIP_REASON)
 class TestAgainstTheServersOwnValidator(unittest.TestCase):
     """The contract test. Everything else here is this repo agreeing with
     itself; this is the only test that can tell us the body would actually
