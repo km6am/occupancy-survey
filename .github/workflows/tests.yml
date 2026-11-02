@@ -1,0 +1,72 @@
+# The whole suite is synthetic -- tests/cw_test_signals.py and
+# tests/synthetic_band.py generate their own IQ and spectra -- so it needs
+# no SDR, no serial port and no network. That claim is in the README and
+# in CLAUDE.md; this workflow is what keeps it true, because a test that
+# quietly started needing hardware would pass on the author's machine and
+# nowhere else.
+#
+# GNU Radio and gr-sdrplay3 are NOT installed here. They come from
+# radioconda and are not pip-installable, and the RSPdx backend is an
+# optional extra for exactly that reason. If a change makes the test suite
+# import them, this workflow fails -- which is the point.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every version, not just the first to break: the useful
+      # signal is usually "3.10 only", which fail-fast would hide.
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python >= 3.10, so the floor is
+        # tested rather than asserted. 3.10 and 3.13 were also run locally
+        # in clean venvs before this workflow was written.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    env:
+      # tools/validate_occupancy.py calls matplotlib.use("Agg") itself,
+      # but nothing guarantees every future plotting path does.
+      MPLBACKEND: Agg
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # The plots extra is needed because the validator's figure is
+        # exercised by a smoke test; the base install is numpy and PyYAML.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install '.[plots]' pytest
+
+      - name: Tests
+        run: python -m pytest tests/ -q
+
+      - name: The vendored reference survives packaging
+        # Run from OUTSIDE the source tree on purpose. In the repo root the
+        # source directory shadows the installed package, so a wheel that
+        # dropped occupancy_survey/reference/*.json would still pass every
+        # test above and fail only for someone who pip-installed it.
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -c "
+          import occupancy_survey, occupancy_survey.reference as ref
+          assert 'site-packages' in occupancy_survey.__file__, occupancy_survey.__file__
+          rows = ref.duty_cycles_rows()
+          assert len(rows) == 13, len(rows)
+          assert ref.provenance_line()
+          print('reference intact:', len(rows), 'rows')
+          "
