@@ -294,6 +294,71 @@ Bands present in the datasets but absent from the report are named as
 unchecked, and a band with suspect or too-steep channels is explicitly
 **not** called clean.
 
+## Sending a survey back
+
+```bash
+python tools/submit_feedback.py --prediction out/qth_prediction/prediction.json --intermod-report out/intermod.json data/occ_*.json.gz
+```
+
+**Dry run by default.** The body is written to `--out` and nothing leaves
+the machine without `--send`. Reading the file first is the point.
+
+**An allowlist, not a denylist.** A `/2` prediction row carries
+`distance_m` and each emitter's coordinates, and two such rows trilaterate
+the receiver as surely as its latitude does — so a denylist would be one
+new field away from publishing someone's address. Only these are copied,
+by name:
+
+| sent per predicted channel | sent per measured channel |
+|---|---|
+| `freq_mhz`, `ref`, `db`, `service` | `freq_mhz`, `duty` |
+| `p_dbm_ref`, `error_db`, `path`, `rank` | `decided_n`, `excess_db_p50`, `excess_db_p90` |
+
+The body is then scanned a second time for the forbidden names at any
+depth, and a third time by `occupancy_survey.disclosure` — belt and braces,
+because an allowlist is only as good as the code applying it.
+
+`rank` is **1..N over the rows actually sent**, by field proxy. It is
+deliberately not the report's own rank, which is computed over the whole
+queried span before the band filter and so is neither 1..N nor comparable
+between submissions with different band sets.
+
+**Nulls that matter.** `duty` is `null`, never 0, when nothing was
+decided — an undecided channel is unmeasured, and a zero duty is a
+measurement. The excess percentiles are `null` when they land in the
+histogram's underflow or overflow, because those returns are *bounds*, not
+values, and the server does arithmetic on them.
+
+**Location:** `site.grid_square` at 4 or 6 characters, else withheld. An
+8-character locator is withheld rather than truncated — someone who wrote
+8 may not have meant to share even the first 6. Never coordinates.
+
+**It refuses** to submit when a checked band had suspect or too-steep
+channels (pass `--allow-suspect-intermod` to override), when a
+callsign-shaped `site_id` would go out (a callsign resolves to a street
+address in the public FCC database), when AGC was enabled, when the
+threshold, gain, dwell or antenna is missing, or when either list exceeds
+100,000 rows.
+
+**The token comes from `SUMMITRFI_TOKEN` and nowhere else** — not an
+argument, which lands in shell history; not a query string, which the
+server logs.
+
+> **Measured 2026-11-01:** Oakland's 69,751-row predicted list with 10,000
+> measured rows gzips to **1.17 MB**, and a full 100,000-row list to
+> **1.62 MB** — both inside the 2 MB limit, so the row cap is what binds.
+> These used random references and floats, which compress *worse* than real
+> data (real licences cluster by holder and sit on a channel grid), so they
+> are upper bounds.
+
+### What this cannot hide
+
+The set of channels you heard. The audible public-safety channel set at one
+point is close to unique, so it locates you more sharply than a
+4-character grid square does. Submitting occupancy at all discloses roughly
+where you are, and no version of this tool could change that. It is stated
+rather than engineered away.
+
 > **Only broadcast FM is a control**, and the list is short on purpose.
 > NOAA Weather Radio was one until 2026-10-28, on the reasoning that a 24/7
 > automated service implies a continuous carrier. It does not — *"the
