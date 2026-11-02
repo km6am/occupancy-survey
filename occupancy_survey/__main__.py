@@ -12,6 +12,8 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from occupancy_survey.channels import resolve_bands
 from occupancy_survey.config import AppConfig
@@ -226,6 +228,9 @@ def main(argv=None) -> int:
     ap.add_argument("--cycles", type=int, help="stop after N full passes")
     ap.add_argument("--duration", type=float, metavar="S",
                     help="stop after S seconds")
+    ap.add_argument("--intermod-json", metavar="FILE",
+                    help="save the --intermod-check results here, for "
+                         "tools/validate_occupancy.py --intermod-report")
     ap.add_argument("--intermod-check", action="store_true",
                     help="paired-gain diagnostic: does this front end "
                          "generate its own signals? Opens the SDR.")
@@ -349,6 +354,7 @@ def main(argv=None) -> int:
         if args.intermod_check:
             from occupancy_survey.schedule import tune_steps
             any_run = False
+            saved = []
             for band in cfg.band_plans():
                 for step in tune_steps(band, cfg.sampling):
                     out = survey.intermod_check(
@@ -358,6 +364,8 @@ def main(argv=None) -> int:
                               f"diagnostic not run", file=sys.stderr)
                         continue
                     any_run = True
+                    saved.append({"band": band.name,
+                                  "center_hz": step.center_hz, **out})
                     # The achieved step is the divisor every order below is
                     # computed with, so it belongs in the output rather than
                     # only in the dataset.
@@ -384,6 +392,30 @@ def main(argv=None) -> int:
                               f"{'  - ' if order is None else f'{order:4.2f}'}"
                               f"  {c['verdict']}")
                     print(f"  {out['advice']}")
+
+            if args.intermod_json and saved:
+                # Saved so tools/validate_occupancy.py can state on the
+                # figure whether the front end was checked. Products land
+                # at frequencies set by the strong emitters, so they
+                # correlate with predicted-strong channels and inflate
+                # occupancy in the direction that flatters the model: a
+                # figure that cannot say the check was done cannot rule
+                # that out.
+                payload = {
+                    "schema": "occupancy-survey/intermod-check/1",
+                    "generated_utc": datetime.now(timezone.utc).isoformat(),
+                    "site_id": cfg.site.site_id,
+                    "gain_step_db_requested": args.gain_step_db,
+                    "steps": saved,
+                }
+                out_path = Path(args.intermod_json)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(payload, indent=1),
+                                    encoding="utf-8")
+                print(f"\nwrote {out_path}")
+            elif args.intermod_json:
+                print("nothing to write: the diagnostic did not run",
+                      file=sys.stderr)
             return 0 if any_run else 5
 
         # Warn here, not only in --check. The decision on a callsign-shaped
