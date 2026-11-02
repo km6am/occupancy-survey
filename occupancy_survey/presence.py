@@ -124,19 +124,30 @@ def min_detectable_duty(n_visits: int, dwell_s: float, period_s: float,
     return min(1.0, on_time / period_s)
 
 
-def _percentile_from_hist(record: dict, hist_spec: dict,
-                          pct: float) -> float | None:
-    """Excess-dB percentile from a stored histogram."""
-    hist = np.asarray(record.get("hist") or [], dtype=np.float64)
+def percentile_from_hist(hist, underflow, overflow, lo_db: float,
+                         bin_db: float, pct: float) -> float | None:
+    """Excess-dB percentile from histogram counts.
+
+    Resolution is bin_db: a value landing inside a bin is reported at the
+    bin's centre, with no interpolation, because the sub-bin distribution
+    was not stored. A percentile falling in the underflow returns lo_db and
+    one falling in the overflow returns the top edge -- both are bounds
+    reported as values, so a caller that cares must compare against those
+    edges rather than treating every return as a measurement.
+
+    None when there are no counts at all, never 0.0: an empty channel has
+    no percentile, and 0 dB of excess is a real and different answer.
+    """
+    hist = np.asarray(hist if hist is not None else [], dtype=np.float64)
     if hist.size == 0:
         return None
-    under = float(record.get("underflow", 0))
-    over = float(record.get("overflow", 0))
+    under = float(underflow or 0)
+    over = float(overflow or 0)
     total = hist.sum() + under + over
     if total <= 0:
         return None
-    lo = float(hist_spec["lo_db"])
-    bin_db = float(hist_spec["bin_db"])
+    lo = float(lo_db)
+    bin_db = float(bin_db)
     target = total * (pct / 100.0)
     cum = under
     if cum >= target:
@@ -146,6 +157,15 @@ def _percentile_from_hist(record: dict, hist_spec: dict,
         if cum >= target:
             return lo + (i + 0.5) * bin_db
     return lo + hist.size * bin_db
+
+
+def _percentile_from_hist(record: dict, hist_spec: dict,
+                          pct: float) -> float | None:
+    """Excess-dB percentile from one stored channel record."""
+    return percentile_from_hist(
+        record.get("hist"), record.get("underflow", 0),
+        record.get("overflow", 0), hist_spec["lo_db"], hist_spec["bin_db"],
+        pct)
 
 
 def strongest_channel(channel_records, hist_spec: dict,
