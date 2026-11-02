@@ -161,22 +161,70 @@ python tools/validate_occupancy.py --prediction out/qth_prediction/prediction.js
 pseudo-summit file — **read-only**: existing FCC cache, `--no-download`,
 scratch output directory, nothing written into that repo.
 
-### Two prediction engines
+### Three prediction engines
 
-| | `--engine pipeline` (default) | `--engine qth-cli` |
-|---|---|---|
-| runs | `sota_rf_sources.py` | `web/map/qth_cli.mjs` |
-| terrain | none — every path is line of sight | SRTM diffraction |
-| channels per site | lowest 40 | all |
-| ordering | ERP/d², frequency-blind | same proxy, with terrain and the FM vertical pattern |
-| level | none | `p_dbm_ref` with an `error_db` band |
-| writes | `qth-prediction/1` | `qth-prediction/2` |
-| needs | Python, the FCC cache | Node ≥ 18, the map's exported tiles |
+| | `--engine report` | `--engine qth-cli` | `--engine pipeline` (default) |
+|---|---|---|---|
+| runs | nothing — ingests a file | `web/map/qth_cli.mjs` | `sota_rf_sources.py` |
+| terrain | SRTM diffraction | SRTM diffraction | none — every path is line of sight |
+| channels per site | all | all | lowest 40 |
+| ordering | proxy with terrain and the FM vertical pattern | same | ERP/d², frequency-blind |
+| level | `p_dbm_ref` with an `error_db` band | same | none |
+| writes | `qth-prediction/2` | `qth-prediction/2` | `qth-prediction/1` |
+| needs | **nothing but a browser** | Node ≥ 18, the map's exported tiles | Python, the FCC cache |
 
-Both emit `field_proxy_w_per_m2` with the same meaning and units, so one
-validator reads either; `/2` adds `p_dbm_ref` and `path`, which is what
-makes the audibility floor frequency-aware and the path residual a
+All three emit `field_proxy_w_per_m2` with the same meaning and units, so
+one validator reads any of them; `/2` adds `p_dbm_ref` and `path`, which is
+what makes the audibility floor frequency-aware and the path residual a
 discriminator rather than a restatement of the ranking.
+
+### `--engine report`: the volunteer path
+
+The map UI computes the location report in the browser and offers it as a
+download. **That file is the whole input** — no `sota-rf` checkout, no Node,
+no FCC cache — so this is the path for anyone running a survey on a machine
+that does not have the model.
+
+1. Open <https://km6am.com/summitRFI/map/>, scroll the left panel to
+   **Report for a location**.
+2. **Pick on map** (or type the coordinates), then fill in **Antenna above
+   ground (m)**. Leave gain, span and floor alone.
+3. **Build report**, check the coordinates it echoes, then **Download
+   JSON** — a file named like `qth-rfi-2026-11-01.json`.
+
+`sota-rf`'s `docs/volunteer/location-report-howto.html` is the same six
+steps with screenshots, written to go in a survey kit.
+
+```bash
+python tools/qth_predict.py --engine report \
+    --report ~/Downloads/qth-rfi-2026-11-01.json
+```
+
+- **The header comes from the file, not the command line.** The point, the
+  antenna height, the reference gain, the span and the channel floor are
+  all read out of the report's own `query` block. Retyping them is how you
+  get a prediction whose header describes a different station than its rows
+  were traced at.
+- `--lat` / `--lon` / `--ant-agl` are accepted here only as a *check*. A
+  disagreement is refused, not resolved — either value could be the right
+  one, and guessing silently mislabels the prediction.
+- **The download holds your exact coordinates** and the distance and
+  bearing to every transmitter, which is why the how-to tells volunteers to
+  keep it to themselves. The ingested `/2` file inherits that; the submit
+  path's allowlist is the only safe exit, and
+  `tests/test_qth_report_ingest.py` runs a real UI-shaped report all the
+  way to a feedback body to check that none of it leaves.
+- **The deployed page is current with the model; its data is not.**
+  Measured 2026-11-01: `engine.js` is byte-identical to `sota-rf` branch
+  `qth-rfi-report`, `qth.js` differs only by its cache-busting stamp, and
+  the page has the −130 dBm channel-floor control. But
+  `map/data/manifest.json` is the **2026-10-28 CA/OR/WA export**, whose
+  names sidecar carries only `owner`, `freqs` and `svc` — **no `ref`, no
+  `call`, no `freqs_all`** — and the longest frequency list is exactly 40
+  entries, so `load_uls`'s truncation is still in effect. A report built
+  from it has every row but no emitter reference, which breaks
+  `make_channel_list.py`'s summit-tag join. The tool counts blank refs and
+  says so on stderr rather than letting it pass unnoticed.
 
 ```bash
 python tools/qth_predict.py --engine qth-cli --lat <LAT> --lon <LON> \
@@ -197,8 +245,10 @@ python tools/qth_predict.py --engine qth-cli --lat <LAT> --lon <LON> \
   coordinates, and two of those trilaterate the receiver. It stays local;
   the submit path's field allowlist is the only safe exit. `bearing_deg`
   and `fspl_db` are deliberately not carried.
-- `pipeline` is still the default only because `qth_cli.mjs` is not on
-  `sota-rf`'s mainline yet. Flip it when that lands.
+- `pipeline` is still the default only because it is the engine that works
+  against `sota-rf`'s mainline. `qth_cli.mjs` is on the unmerged
+  `qth-rfi-report` branch and is not served (404, measured 2026-11-01), so
+  `--engine report` is the one a volunteer can use today.
 
 > The `/2` channel list is **much** longer: 69,751 channels in these five
 > bands at one Oakland point against 188 in the current targeted list
@@ -476,7 +526,8 @@ roles have deliberately different dependencies:
 |---|---|---|
 | **survey host** | numpy, PyYAML, a backend | runs unattended, writes interval files |
 | **analysis host** | + pandas, matplotlib | merges, validates, plots |
-| **generating a fresh prediction** | + a `sota-rf` checkout and its FCC cache | that one step, and nothing else |
+| **ingesting a prediction** (`--engine report`) | nothing extra — a browser, once, elsewhere | turns a downloaded location report into `/2` |
+| **generating a fresh prediction** (`--engine pipeline` / `qth-cli`) | + a `sota-rf` checkout and its FCC cache | that one step, and nothing else |
 
 **No sibling checkout is needed to clone and use this repository.** What it
 reads from its two upstream projects — the duty-cycle reference table and
@@ -485,9 +536,10 @@ with the source branch, commit, blob and sha256 it was taken from. Fixtures
 in `tests/fixtures/` stand in for a real sota-rf run, so merging,
 validating and plotting all work standalone.
 
-Only *generating a new* prediction still shells out to `sota-rf`, which is
-an optional import step: point it at a checkout with
-`SOTA_RF_DIR=/path/to/sota-rf`. Deliberately not vendored — it is ~756 MB
+Only *generating a new* prediction locally still shells out to `sota-rf`,
+which is an optional import step: point it at a checkout with
+`SOTA_RF_DIR=/path/to/sota-rf`. `--engine report` needs no checkout at all,
+which is the point of it. Deliberately not vendored — it is ~756 MB
 of third-party data with an acquisition date on it, and copying it would
 freeze a dataset that should be refreshed and duplicate a maintained tool.
 
