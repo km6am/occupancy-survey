@@ -311,5 +311,44 @@ class TestTheServerAcceptsAnIngestedReport(unittest.TestCase):
             self.assertIn(row["path"], sf.SERVER_PATHS)
 
 
+class TestTheSummaryDoesNotMislabelItsOrdering(unittest.TestCase):
+    """The rows are field-ranked, not dBm-ranked. A heading that says
+    "strongest" over a dBm column asserts something the data does not
+    support: on a real report the first row read -32.4 dBm while a TV
+    carrier further down read -29.0."""
+
+    def _heading(self):
+        import contextlib
+        import io
+        pred = _run(_ui_report())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            qth._summarise(pred["channels"], "report")
+        return buf.getvalue()
+
+    def test_the_heading_names_the_ranking_it_shows(self):
+        text = self._heading()
+        self.assertIn("by FIELD", text)
+        self.assertIn("not by dBm", text)
+
+    def test_a_stronger_dbm_row_can_sit_below_the_first(self):
+        """The case that makes the heading necessary, built explicitly:
+        field order and dBm order disagree, so the first row shown is not
+        the strongest level. The synthetic fixture's own rows happen to
+        agree, which is why this cannot be left to it."""
+        data = json.loads(REPORT.read_text(encoding="utf-8"))
+        rows = [r for r in data["channels"]
+                if r.get("p_dbm_ref") is not None][:2]
+        rows[0]["field_vm"], rows[0]["p_dbm_ref"] = 1.0, -80.0
+        rows[1]["field_vm"], rows[1]["p_dbm_ref"] = 0.5, -20.0
+        data["channels"] = rows
+        report = _ui_report(channels=rows)
+        pred = _run(report)
+        levels = [r["p_dbm_ref"] for r in pred["channels"]]
+        self.assertEqual(levels[0], -80.0)
+        self.assertEqual(max(levels), -20.0)
+        self.assertNotEqual(levels[0], max(levels))
+
+
 if __name__ == "__main__":
     unittest.main()
