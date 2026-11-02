@@ -478,7 +478,9 @@ dynamic range than a cheap receiver has.
 | receiver | ADC | usable range | for this survey |
 |---|---|---|---|
 | **SDRplay RSPdx** | 14-bit | ~75–85 dB | **preferred** — tracking preselect + switchable FM/DAB notches |
-| RSPduo | 14-bit | ~75–85 dB | two tuners: a control band and a target band at once |
+| RSPdx-R2 | 14-bit | ~75–85 dB | same controls as the RSPdx; `device_type: rspdxr2` |
+| RSP1A / RSP1B | 14-bit | ~70–80 dB | FM/DAB notches, one antenna input, no HDR; `rsp1a` / `rsp1b` |
+| RSPduo | 14-bit | ~75–85 dB | **not yet driven** — two tuners would allow a control band and a target band at once |
 | Airspy R2 / Mini | 12-bit | ~70–80 dB | good front end, no built-in notches |
 | USRP B2xx | 12–14-bit | ~70–85 dB | no preselection; needs external filters |
 | RTL-SDR | 8-bit | ~45–50 dB | **needs an external bandpass** to be usable here at all |
@@ -504,7 +506,7 @@ before reaching for gain: a bandpass costs no sensitivity, less gain does.
 
 | backend | needs | notes |
 |---|---|---|
-| `gnuradio` | radioconda + gr-sdrplay3 | RSPdx and other high-performance SDRs; actuates the notch filters |
+| `gnuradio` | radioconda + gr-sdrplay3 | RSPdx, RSPdx-R2, RSP1A, RSP1B, and other high-performance SDRs; actuates the notch filters |
 | `rtl_sdr` | the `rtl_sdr` binary + numpy | reach over sensitivity; external filter effectively required |
 | `rtl_power` | the `rtl_power` binary | fallback; **averages before thresholding** |
 | `synthetic` | nothing | verify an install, exercise the pipeline |

@@ -21,11 +21,44 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from occupancy_survey.backends.sdrplay_models import (SDRPLAY_MODELS,
+                                                      sdrplay_model)
 from occupancy_survey.channels import DEFAULT_SCHEDULE, resolve_bands
 from occupancy_survey.detector import ThresholdPolicy
 from occupancy_survey.occupancy import HistogramSpec
 from occupancy_survey.schedule import SamplingDesign
 from occupancy_survey.site import SiteMetadata
+
+
+GNURADIO_BACKENDS = ("gnuradio", "gr", "rspdx")
+
+
+def _check_sdrplay_hardware(sdr, sdr_raw: dict) -> None:
+    """Refuse a setting the chosen SDRplay model has no hardware for.
+
+    Caught here rather than when the device opens: an RSP1A has no setter
+    for either an antenna port or HDR, and an RSPdx port name is matched
+    exactly by gr-sdrplay3, so a typo would fail only after the receiver
+    was already streaming -- or, worse, be ignored.
+    """
+    model = sdrplay_model(sdr.device_type)
+    if model is None or sdr.backend.lower() not in GNURADIO_BACKENDS:
+        return
+    if not model.has_antenna_switch:
+        if sdr_raw.get("antenna_port"):
+            raise ValueError(
+                f"sdr.antenna_port is set, but the {model.name} has one "
+                f"antenna input and no port switch. Remove the key; the "
+                f"antenna itself is described under site.antenna.")
+        # The dataclass default names an RSPdx port; it means nothing here.
+        sdr.antenna_port = ""
+    elif sdr.antenna_port not in model.antenna_ports:
+        raise ValueError(
+            f"sdr.antenna_port {sdr.antenna_port!r} is not a {model.name} "
+            f"port. Choose one of: {', '.join(model.antenna_ports)}.")
+    if sdr.hdr_mode and not model.hdr:
+        raise ValueError(f"sdr.hdr_mode is set, but the {model.name} has no "
+                         f"HDR mode.")
 
 
 @dataclass
@@ -139,6 +172,7 @@ class AppConfig:
         sdr = SdrConfig(**sdr_raw)
         if sdr.bw_hz == SdrConfig.bw_hz and "bw_hz" not in sdr_raw:
             sdr.bw_hz = sdr.sample_rate_hz
+        _check_sdrplay_hardware(sdr, sdr_raw)
 
         samp_raw = dict(raw.get("sampling") or {})
         # Derived unless explicit; see the module docstring.
@@ -164,12 +198,13 @@ class AppConfig:
                 raise ValueError(
                     f"sdr.band_rf_gain_reduction_db.{name} must be a "
                     f"reduction in dB >= 0, got {value!r}")
-        if per_band and not (sdr.backend.lower() in ("gnuradio", "gr", "rspdx")
-                             and sdr.device_type.lower() == "rspdx"):
+        if per_band and not (sdr.backend.lower() in GNURADIO_BACKENDS
+                             and sdrplay_model(sdr.device_type)):
             raise ValueError(
-                "sdr.band_rf_gain_reduction_db is only actuated on an RSPdx "
-                "through the gnuradio backend. Refusing rather than recording "
-                "a per-band gain this receiver would not apply.")
+                "sdr.band_rf_gain_reduction_db is only actuated on an SDRplay "
+                f"receiver ({', '.join(SDRPLAY_MODELS)}) through the gnuradio "
+                "backend. Refusing rather than recording a per-band gain this "
+                "receiver would not apply.")
         sdr.band_rf_gain_reduction_db = {k: float(v)
                                          for k, v in per_band.items()}
         try:

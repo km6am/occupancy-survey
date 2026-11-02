@@ -15,17 +15,20 @@ now has to land in two places. If this file and its origin drift, the origin
 is authoritative for anything CW-related and this file is authoritative for
 anything occupancy-related.
 
-THE ONE CHANGE: the RSPdx branch reads flat attributes off the config object
+THE CHANGES: the SDRplay branch reads flat attributes off the config object
 instead of calling `config.to_rspdx_config()`, because that method belongs to
-cw_recorder's much larger config machinery. Gain is expressed here the way
-the SDRplay API expresses it -- as a *reduction* in dB, where larger means
-less gain.
+cw_recorder's much larger config machinery. And since 2026-11-02 it covers
+the SDRplay models in sdrplay_models.py, not only the RSPdx: one creator,
+with the antenna switch and HDR set only on a model that has them. Gain is
+expressed here the way the SDRplay API expresses it -- as a *reduction* in
+dB, where larger means less gain.
 
 AGC is refused rather than supported. See occupancy_survey/acquisition.py
 for why: an AGC moves the noise floor and takes the occupancy number with it.
 
 Supported devices:
-  rspdx   - SDRplay RSPdx (via gr-sdrplay3)
+  rspdx, rspdxr2, rsp1a, rsp1b
+          - SDRplay (via gr-sdrplay3); see sdrplay_models.py
   rtlsdr  - RTL-SDR dongles (via SoapySDR)
   hackrf  - HackRF One (via SoapySDR)
   lime    - LimeSDR (via SoapySDR)
@@ -35,6 +38,9 @@ Supported devices:
 """
 
 import logging
+
+from occupancy_survey.backends.sdrplay_models import (SDRPLAY_MODELS,
+                                                      sdrplay_model)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ def create_source(config):
     device_type = config.device_type.lower().strip()
 
     creators = {
-        "rspdx": _create_rspdx_source,
+        **{name: _create_sdrplay_source for name in SDRPLAY_MODELS},
         "rtlsdr": _create_soapy_source,
         "hackrf": _create_soapy_source,
         "lime": _create_soapy_source,
@@ -90,11 +96,17 @@ def create_source(config):
     return source
 
 
-def _create_rspdx_source(config):
-    """Create SDRplay RSPdx source via gr-sdrplay3."""
-    from gnuradio import sdrplay3
+def _create_sdrplay_source(config, sdrplay3=None):
+    """Create an SDRplay source via gr-sdrplay3.
 
-    source = sdrplay3.rspdx(
+    `sdrplay3` is injectable so the per-model calls can be tested without
+    the library or a device.
+    """
+    if sdrplay3 is None:
+        from gnuradio import sdrplay3
+    model = sdrplay_model(config.device_type)
+
+    source = getattr(sdrplay3, model.block)(
         getattr(config, "device_selector", "") or "",
         sdrplay3.stream_args("fc32", 1),
     )
@@ -104,8 +116,12 @@ def _create_rspdx_source(config):
     source.set_gain_mode(False)  # False == manual gain; see AgcRefused above
     source.set_gain(-config.if_gain_reduction_db, "IF")
     source.set_gain(-config.rf_gain_reduction_db, "RF")
-    source.set_antenna(config.antenna_port)
-    source.set_hdr_mode(getattr(config, "hdr_mode", False))
+    # The RSP1A and RSP1B have one input and no setter for either; calling
+    # one would raise AttributeError from inside a constructor.
+    if model.has_antenna_switch:
+        source.set_antenna(config.antenna_port)
+    if model.hdr:
+        source.set_hdr_mode(getattr(config, "hdr_mode", False))
     # Notch filters are set per BAND at run time, not here; see
     # GnuRadioBackend.set_filters(). Start with them off so the initial
     # state is known rather than inherited from the last application that
@@ -118,9 +134,10 @@ def _create_rspdx_source(config):
     source.set_dc_offset_mode(getattr(config, "dc_offset_correction", True))
     source.set_iq_balance_mode(getattr(config, "iq_balance_correction", True))
 
-    logger.info("RSPdx: IF -%.0f dB, RF -%.0f dB, antenna %s",
+    logger.info("%s: IF -%.0f dB, RF -%.0f dB, antenna %s", model.name,
                 config.if_gain_reduction_db, config.rf_gain_reduction_db,
-                config.antenna_port)
+                config.antenna_port if model.has_antenna_switch
+                else "(single input)")
     return source
 
 

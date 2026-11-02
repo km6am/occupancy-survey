@@ -36,7 +36,10 @@ sdr:
   # USRP). It is the one that can actuate the per-band notch filters.
   backend: "gnuradio"
 
-  # For backend: gnuradio -- rspdx, rtlsdr, hackrf, lime, pluto, usrp, soapy
+  # For backend: gnuradio -- rspdx, rspdxr2, rsp1a, rsp1b (SDRplay), or
+  # rtlsdr, hackrf, lime, pluto, usrp, soapy. The RSP1A and RSP1B have one
+  # antenna input and no HDR mode: leave antenna_port and hdr_mode out for
+  # them. The RSP1 (no FM notch), RSP2 and RSPduo are not supported.
   device_type: "rspdx"
 
   # Wider is better here: fewer tune steps, so a shorter cycle and more
@@ -85,6 +88,8 @@ sdr:
   # which compares the ports by how their noise floor moves with frequency.
   # Two frequencies at least 1.5x apart are needed; one tells you nothing,
   # because an open connector picks up strong local signals perfectly well.
+  # RSPdx and RSPdx-R2: "Antenna A", "Antenna B" or "Antenna C". Omit on an
+  # RSP1A or RSP1B, which have a single input.
   antenna_port: "Antenna B"
 
   # For backend: rtl_sdr -- tuner gain in dB. Must be > 0; rtl_sdr treats

@@ -43,6 +43,7 @@ import numpy as np
 
 from occupancy_survey.backends.base import Backend, Sweep
 from occupancy_survey.overload_watch import OverloadWatcher
+from occupancy_survey.backends.sdrplay_models import sdrplay_model
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,13 @@ class GnuRadioBackend(Backend):
             "antenna_port": getattr(cfg, "antenna_port", None),
             "dropped_sweeps": self._sink.dropped,
         }
-        if getattr(cfg, "device_type", "").lower() == "rspdx":
+        model = sdrplay_model(getattr(cfg, "device_type", ""))
+        if model:
+            meta["model"] = model.name
+            if not model.has_antenna_switch:
+                # One input: a port name here would be the config default,
+                # describing a switch this receiver does not have.
+                meta["antenna_port"] = None
             meta["gain"] = {
                 "if_reduction_db": cfg.if_gain_reduction_db,
                 "rf_reduction_db": cfg.rf_gain_reduction_db,
@@ -329,7 +336,8 @@ class GnuRadioBackend(Backend):
             }
             meta["gain_units"] = ("SDRplay gain REDUCTION in dB; larger means "
                                  "less gain")
-            meta["hdr_mode"] = getattr(cfg, "hdr_mode", False)
+            if model.hdr:
+                meta["hdr_mode"] = getattr(cfg, "hdr_mode", False)
             if self._running:
                 # Only meaningful once streaming: before that the API has
                 # had no traffic to overload on.
@@ -393,7 +401,7 @@ class GnuRadioBackend(Backend):
     def _gain_stage_names(self) -> dict:
         """Stage name -> the value this config asks for, in device units."""
         cfg = self._config
-        if getattr(cfg, "device_type", "").lower() == "rspdx":
+        if sdrplay_model(getattr(cfg, "device_type", "")):
             # Set as a negated REDUCTION, so read back the same way. RF is
             # whatever the current band asked for, which may be a per-band
             # override rather than the session value.
@@ -542,6 +550,10 @@ class GnuRadioBackend(Backend):
         a silently ignored switch would otherwise look like a successful
         one -- and a port comparison built on that would be meaningless.
         """
+        model = sdrplay_model(getattr(self._config, "device_type", ""))
+        if model and not model.has_antenna_switch:
+            raise ValueError(f"the {model.name} has one antenna input and no "
+                             f"port switch")
         self._source.set_antenna(str(name))
         self._sink.reset()
         self._clip.take()
@@ -598,7 +610,7 @@ class GnuRadioBackend(Backend):
         """
         cfg = self._config
         self._band_now = band_name
-        if getattr(cfg, "device_type", "").lower() != "rspdx":
+        if not sdrplay_model(getattr(cfg, "device_type", "")):
             return Backend.set_band_gain(self, band_name)
         overrides = getattr(cfg, "band_rf_gain_reduction_db", None) or {}
         rf = float(overrides.get(band_name, cfg.rf_gain_reduction_db))
@@ -644,7 +656,7 @@ class GnuRadioBackend(Backend):
         from strong signals and uses this only as a fallback.
         """
         cfg = self._config
-        if getattr(cfg, "device_type", "").lower() != "rspdx":
+        if not sdrplay_model(getattr(cfg, "device_type", "")):
             fn = getattr(self._source, "set_gain", None)
             if fn is None:
                 return False

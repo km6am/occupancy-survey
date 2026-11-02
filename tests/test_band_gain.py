@@ -56,7 +56,7 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             AppConfig.from_dict(_raw(backend="rtl_sdr",
                                      band_rf_gain_reduction_db={"bcast_fm": 40}))
-        self.assertIn("RSPdx", str(cm.exception))
+        self.assertIn("SDRplay", str(cm.exception))
 
 
 class _OrderBackend(SyntheticBackend):
