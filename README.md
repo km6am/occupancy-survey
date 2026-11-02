@@ -1,5 +1,7 @@
 # occupancy-survey
 
+[![tests](https://github.com/km6am/occupancy-survey/actions/workflows/tests.yml/badge.svg)](https://github.com/km6am/occupancy-survey/actions/workflows/tests.yml)
+
 Long-term channel-occupancy monitor. Steps band to band on a schedule and
 logs, per channel, **what fraction of the time a carrier is present** — plus
 a count of active channels per band per interval.
@@ -498,11 +500,26 @@ reports headroom in days against the configured interval.
 ## Tests
 
 ```bash
+python -m pytest tests/ -q
+```
+
+```bash
 python -m unittest discover
 ```
 
 No hardware needed. Synthetic spectra use exponential bin power, because the
 max-bin statistic depends on that tail.
+
+CI runs the suite on **3.10 through 3.13** — 3.10 because that is the floor
+`pyproject.toml` declares, so the claim is tested rather than asserted.
+GNU Radio and `gr-sdrplay3` are deliberately *not* installed there: they come
+from radioconda and are not pip-installable, so if a change makes the test
+suite import them, CI fails. That is the point of running it without them.
+
+CI also imports the installed package from **outside** the source tree. In
+the repo root the source directory shadows the installed copy, so a wheel
+that dropped `occupancy_survey/reference/*.json` would pass every test and
+fail only for someone who had `pip install`ed it.
 
 ## Provenance and licence
 
