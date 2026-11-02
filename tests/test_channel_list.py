@@ -29,6 +29,24 @@ def _band(freqs, role=TARGET, bw=11_250.0, expected=None, service="IG"):
                          for f in freqs]}
 
 
+class TestTargetedBandsKeepTheirBaseline(unittest.TestCase):
+
+    def test_targeted_fm_keeps_the_5th_percentile(self):
+        """Measured 2026-11-02: the targeted FM control ran on the 25th
+        percentile, which the grid band had been moved off because a dense
+        city FM band defeats it."""
+        with tempfile.TemporaryDirectory() as d:
+            p = _list_file(d, {
+                "bcast_fm": _band([88.5e6, 90.1e6], role=CONTROL,
+                                  bw=180_000.0, expected=1.0, service="FM"),
+                "uhf_lmr": _band([451.55e6])})
+            plans = {b.name: b for b in load_channel_list(p)}
+        self.assertEqual(plans["bcast_fm"].baseline_percentile,
+                         BAND_PLANS["bcast_fm"].baseline_percentile)
+        self.assertEqual(plans["bcast_fm"].baseline_percentile, 5.0)
+        self.assertIsNone(plans["uhf_lmr"].baseline_percentile)
+
+
 class TestCovering(unittest.TestCase):
 
     def test_sparse_channels_cost_one_window_per_cluster(self):

@@ -54,17 +54,52 @@ the watcher runs for a backend's whole lifetime, so an overnight survey
 would have logged nothing at all. Losing a watcher that has never caught an
 RSPdx report is the cheaper side of that trade. With stderr redirected to a
 file or pipe it is an ordinary descriptor and the watcher runs as elsewhere.
+
+WHERE THE REPORTS ACTUALLY GO -- found 2026-11-02, and it supersedes the
+guesses above. The messages are GNU Radio log lines: gr-sdrplay3 handles the
+API's PowerOverloadChange event and calls its block logger, whose pattern is
+`%n :%l: %v`. GNU Radio's own config decides where that logger writes, and
+radioconda ships `[LOG] log_file = stdout` -- not stderr, which is why an
+fd 2 capture never saw one. On Windows the sink is spdlog's wincolor sink,
+which takes the Win32 std handle once, when GNU Radio's logging starts, so
+redirecting a CRT descriptor afterwards cannot reach it either.
+
+So GnuRadioLogCapture below goes upstream of all that: BEFORE gnuradio is
+imported it sets GR_CONF_LOG_LOG_FILE=stderr and, on Windows, points the
+Win32 STD_ERROR_HANDLE (not fd 2, which Python's console stream still uses)
+at a pipe. spdlog sees a non-console handle and writes each line with
+WriteFile, unbuffered; measured, a warning reached the pipe in the same
+millisecond it was logged. A file sink would have been simpler and is wrong:
+spdlog buffers it, and nothing reached the file until the process exited.
+The lines then go to a timestamped log file instead of scrolling over the
+live display, and each overload is recorded with when it happened and what
+the receiver was doing -- the question a bare count cannot answer is
+whether an overload is a retune transient or a steady condition.
 """
 
 from __future__ import annotations
 
+import collections
+import datetime as _dt
 import logging
 import os
 import re
 import sys
 import threading
+import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+GR_LOG_ENV = "GR_CONF_LOG_LOG_FILE"
+
+# An overload within this long of a retune or gain change is filed as
+# "settling": the RSPdx re-runs its LNA/PLL setup on both, and the lab logs
+# put most reports at exactly those moments (port switches, retunes).
+SETTLING_S = 2.0
+
+# Kept in the dataset; the log file has every one.
+RECENT_EVENTS = 100
 
 # The API's wording, as observed on gr-sdrplay3 with SDRplay API 3.15.1:
 #     rspdx :warning: overload detected - please reduce gain
@@ -88,28 +123,182 @@ def _unsupported_reason(stream) -> str | None:
     return None
 
 
-class OverloadWatcher:
-    """Tee file descriptor 2, counting the API's overload reports.
+def _utc(t: float) -> str:
+    return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).isoformat(
+        timespec="milliseconds")
 
-    Unsupported platforms degrade to counting nothing and saying so, rather
-    than failing a survey over a diagnostic.
+
+def _set_win32_stderr(handle) -> bool:                    # pragma: no cover
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.SetStdHandle.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+    k32.SetStdHandle.restype = ctypes.c_int
+    return bool(k32.SetStdHandle(0xFFFFFFF4, handle))    # STD_ERROR_HANDLE
+
+
+class GnuRadioLogCapture:
+    """GNU Radio's log, moved off the console and onto a pipe we read.
+
+    Process-wide, because the std handle is. install() must run before
+    gnuradio is first imported: GNU Radio reads its log config, and spdlog
+    takes the handle, exactly once.
     """
 
-    def __init__(self, patterns=None, stderr=None):
+    _active: "GnuRadioLogCapture | None" = None
+
+    def __init__(self, log_path, read_fd: int):
+        self.log_path = str(log_path) if log_path else None
+        self._subscribers = []
+        self._lock = threading.Lock()
+        self._file = None
+        if self.log_path:
+            Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self.log_path, "a", encoding="utf-8",
+                              errors="replace")
+        self._thread = threading.Thread(
+            target=self._pump, args=(read_fd,), name="gr_log_capture",
+            daemon=True)
+        self._thread.start()
+
+    @classmethod
+    def active(cls) -> "GnuRadioLogCapture | None":
+        return cls._active
+
+    @classmethod
+    def install(cls, log_path, *, platform=None,
+                set_std_handle=None) -> "GnuRadioLogCapture | None":
+        """Route GNU Radio's log here. None when it cannot or need not.
+
+        Off Windows this only sets the log to stderr, where the fd 2 tee
+        already works; it returns None and OverloadWatcher tees as before.
+        """
+        if cls._active is not None:
+            return cls._active
+        if "gnuradio.gr" in sys.modules:
+            logger.warning(
+                "gnuradio was imported before the log capture was installed; "
+                "the SDRplay overload reports will go wherever GNU Radio's "
+                "config sends them, uncounted")
+            return None
+        os.environ[GR_LOG_ENV] = "stderr"
+        if (platform or sys.platform) != "win32":
+            return None
+        if set_std_handle is None:                         # pragma: no cover
+            import msvcrt
+            read_fd, write_fd = os.pipe()
+            if not _set_win32_stderr(msvcrt.get_osfhandle(write_fd)):
+                os.close(read_fd)
+                os.close(write_fd)
+                logger.warning("could not redirect the Win32 stderr handle; "
+                               "overload reports will not be counted")
+                return None
+        else:
+            read_fd, write_fd = set_std_handle()
+        # write_fd stays open for the life of the process: the std handle IS
+        # it, and closing it would hand spdlog a dead handle.
+        cls._active = cls(log_path, read_fd)
+        return cls._active
+
+    @classmethod
+    def _reset_for_tests(cls) -> None:
+        active, cls._active = cls._active, None
+        if active is not None:
+            active._thread.join(timeout=2.0)
+            if active._file is not None:
+                active._file.close()
+
+    def subscribe(self, fn) -> None:
+        with self._lock:
+            self._subscribers.append(fn)
+
+    def unsubscribe(self, fn) -> None:
+        with self._lock:
+            if fn in self._subscribers:
+                self._subscribers.remove(fn)
+
+    def _pump(self, read_fd: int) -> None:
+        buf = b""
+        while True:
+            try:
+                chunk = os.read(read_fd, 65536)
+            except OSError:                              # pragma: no cover
+                break
+            if not chunk:
+                break
+            t = time.time()
+            buf += chunk
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                self._dispatch(line.rstrip(b"\r"), t)
+        if buf:
+            self._dispatch(buf.rstrip(b"\r"), time.time())
+
+    def _dispatch(self, line: bytes, t: float) -> None:
+        with self._lock:
+            subs = list(self._subscribers)
+        notes = []
+        for fn in subs:
+            try:
+                note = fn(line, t)
+            except Exception:                            # pragma: no cover
+                logger.exception("overload subscriber failed")
+                note = None
+            if note:
+                notes.append(note)
+        if self._file is not None:
+            text = line.decode("utf-8", "replace")
+            suffix = ("  [" + "; ".join(notes) + "]") if notes else ""
+            try:
+                self._file.write(f"{_utc(t)} {text}{suffix}\n")
+                self._file.flush()
+            except (OSError, ValueError):                # pragma: no cover
+                pass
+
+
+class OverloadWatcher:
+    """Count the API's overload reports, and record when each happened.
+
+    Reads GnuRadioLogCapture when one is installed, and otherwise tees file
+    descriptor 2. Unsupported platforms degrade to counting nothing and
+    saying so, rather than failing a survey over a diagnostic.
+
+    `context`, when given, is called on each report and returns what the
+    receiver was doing: band, center_hz, and the time.time() of the last
+    retune and gain change. That is what splits a settling transient from a
+    steady overload during a dwell -- only the second biases a duty cycle.
+    """
+
+    def __init__(self, patterns=None, stderr=None, context=None,
+                 capture=None):
         self._patterns = patterns or PATTERNS
         self._counts = {k: 0 for k in self._patterns}
         self._lock = threading.Lock()
         self._saved_fd = None
         self._write_fd = None
         self._thread = None
-        self._unsupported_note = _unsupported_reason(
-            sys.stderr if stderr is None else stderr)
+        self._context = context
+        self._capture = (capture if capture is not None
+                         else GnuRadioLogCapture.active())
+        self._subscribed = False
+        if self._capture is not None:
+            self._unsupported_note = None
+        else:
+            self._unsupported_note = _unsupported_reason(
+                sys.stderr if stderr is None else stderr)
         self._supported = self._unsupported_note is None
         self._lines = 0
+        self._by_band = collections.Counter()
+        self._by_phase = collections.Counter()
+        self._recent = collections.deque(maxlen=RECENT_EVENTS)
 
     # ------------------------------------------------------------------ #
 
     def start(self) -> "OverloadWatcher":
+        if self._capture is not None:
+            if not self._subscribed:
+                self._capture.subscribe(self._on_line)
+                self._subscribed = True
+            return self
         if not self._supported or self._saved_fd is not None:
             return self
         try:
@@ -133,6 +322,10 @@ class OverloadWatcher:
 
     def stop(self) -> dict:
         """Restore fd 2 and return the counts. Safe to call twice."""
+        if self._subscribed:
+            self._capture.unsubscribe(self._on_line)
+            self._subscribed = False
+            return self.counts
         if self._saved_fd is None:
             return self.counts
         try:
@@ -196,12 +389,60 @@ class OverloadWatcher:
             except OSError:                              # pragma: no cover
                 pass
 
-    def _count_line(self, line: bytes) -> None:
+    def _on_line(self, line: bytes, t: float):
+        return self._count_line(line, t)
+
+    def _count_line(self, line: bytes, t: float | None = None):
+        """Count one line; return a short note for the log if it matched."""
+        t = time.time() if t is None else t
         with self._lock:
             self._lines += 1
-            for name, pattern in self._patterns.items():
-                if pattern.search(line):
-                    self._counts[name] += 1
+            kinds = [name for name, pattern in self._patterns.items()
+                     if pattern.search(line)]
+            for name in kinds:
+                self._counts[name] += 1
+        if not kinds:
+            return None
+        event = {"t_utc": _utc(t), "kind": kinds[0].replace("overload_", "")}
+        event.update(self._where(t))
+        with self._lock:
+            self._by_band[event.get("band") or "unknown"] += 1
+            self._by_phase[event["phase"]] += 1
+            self._recent.append(event)
+        bits = [event["phase"]]
+        if event.get("band"):
+            bits.append(event["band"])
+        if event.get("center_mhz") is not None:
+            bits.append(f"{event['center_mhz']:.4f} MHz")
+        if event.get("s_since_change") is not None:
+            bits.append(f"{event['s_since_change']:.1f} s after "
+                        f"{event['last_change']}")
+        return ", ".join(bits)
+
+    def _where(self, t: float) -> dict:
+        """What the receiver was doing at t, and the phase that implies."""
+        ctx = {}
+        if self._context is not None:
+            try:
+                ctx = dict(self._context() or {})
+            except Exception:                            # pragma: no cover
+                ctx = {}
+        out = {}
+        if ctx.get("band"):
+            out["band"] = ctx["band"]
+        if ctx.get("center_hz"):
+            out["center_mhz"] = round(float(ctx["center_hz"]) / 1e6, 6)
+        changes = {k: ctx.get(k) for k in ("retune", "gain")
+                   if ctx.get(k) is not None}
+        if not changes:
+            out["phase"] = "startup"
+            return out
+        last, at = max(changes.items(), key=lambda kv: kv[1])
+        since = max(0.0, t - at)
+        out["last_change"] = last
+        out["s_since_change"] = round(since, 3)
+        out["phase"] = "settling" if since < SETTLING_S else "dwell"
+        return out
 
     # ------------------------------------------------------------------ #
 
@@ -223,6 +464,11 @@ class OverloadWatcher:
         out["overload_events"] = max(detected, corrected)
         if corrected > detected:
             out["onset_before_watching"] = corrected - detected
+        with self._lock:
+            out["by_phase"] = dict(self._by_phase)
+            out["by_band"] = dict(self._by_band)
+        out["route"] = ("gnuradio_log" if self._capture is not None
+                        else "fd2")
         out["supported"] = self._supported
         if not self._supported:
             out["note"] = (f"{self._unsupported_note}; the API's overload "
@@ -234,16 +480,26 @@ class OverloadWatcher:
         """Dataset form, with the asymmetry spelled out for a later reader."""
         c = self.counts
         detected = c.get("overload_events", 0)
+        route = ("GNU Radio's log, which is where gr-sdrplay3 sends them"
+                 if c["route"] == "gnuradio_log" else "fd 2")
         out = {
             **c,
             "interpretation": (
-                "Counts of the SDRplay API's own overload reports, captured "
-                "from fd 2. A non-zero count means the analog front end was "
-                "driven into its limit during this run; intermodulation "
-                "products from it look like carriers and RAISE measured "
-                "occupancy, so affected channels read busier than they are."
+                f"Counts of the SDRplay API's own overload reports, captured "
+                f"from {route}, for this run so far. A non-zero count means "
+                f"the analog front end was driven into its limit; "
+                f"intermodulation products from it look like carriers and "
+                f"RAISE measured occupancy, so affected channels read busier "
+                f"than they are. by_phase splits them: 'settling' is within "
+                f"{SETTLING_S:g} s of a retune or gain change (a transient "
+                f"the retune settle mostly discards), 'dwell' is during "
+                f"measurement and is the kind that biases duty cycles."
             ),
         }
+        with self._lock:
+            out["recent_events"] = list(self._recent)
+        if self._capture is not None and self._capture.log_path:
+            out["log_file"] = Path(self._capture.log_path).name
         # ASYMMETRIC, on purpose. A count is evidence of overload; a zero is
         # not evidence of its absence. Measured 2026-11-01: a 15-minute run
         # with stderr redirected to a file, so the watcher was running,
@@ -256,6 +512,14 @@ class OverloadWatcher:
         # "none_captured" and the interpretation says what that is worth.
         if detected and c.get("supported"):
             out["verdict"] = "overloaded"
+        elif c.get("supported") and c["route"] == "gnuradio_log":
+            out["verdict"] = "none_captured"
+            out["interpretation"] += (
+                " None were captured. This route reads the logger that "
+                "prints the reports, so a zero is far better evidence than "
+                "the fd 2 zero was -- but it was verified with a logged test "
+                "line, not yet against a real overload, so read it with the "
+                "gain lock and --intermod-check until a run has shown both.")
         elif c.get("supported"):
             out["verdict"] = "none_captured"
             out["interpretation"] += (

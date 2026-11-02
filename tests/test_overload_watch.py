@@ -9,10 +9,15 @@ downstream of the stage that compresses.
 import io
 import os
 import sys
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from occupancy_survey.backends.base import Backend
-from occupancy_survey.overload_watch import OverloadWatcher
+from occupancy_survey.overload_watch import (GR_LOG_ENV, GnuRadioLogCapture,
+                                             OverloadWatcher)
 from occupancy_survey.preflight import Preflight, _check_overload_reports
 
 
@@ -256,6 +261,140 @@ class TestPreflightCountsEpisodes(unittest.TestCase):
     def test_zero_events_does_not_pass(self):
         self.assertIsNone(self._check({"supported": True,
                                        "overload_events": 0}).ok)
+
+
+class TestGnuRadioLogCapture(unittest.TestCase):
+    """The reports are GNU Radio log lines; capture them where they start.
+
+    Found 2026-11-02: radioconda's GNU Radio logs to STDOUT, through a
+    spdlog sink that took the Win32 handle when logging started, so no fd 2
+    capture could ever see an RSPdx report. The pipe here stands in for the
+    Win32 std handle install() redirects.
+    """
+
+    def setUp(self):
+        GnuRadioLogCapture._reset_for_tests()
+        self._env = os.environ.get(GR_LOG_ENV)
+        self._dir = tempfile.TemporaryDirectory()
+        self._fds = []
+
+    def tearDown(self):
+        for fd in self._fds:                # EOF ends the capture thread
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        GnuRadioLogCapture._reset_for_tests()
+        if self._env is None:
+            os.environ.pop(GR_LOG_ENV, None)
+        else:
+            os.environ[GR_LOG_ENV] = self._env
+        self._dir.cleanup()
+
+    def _install(self):
+        def fake_handle():
+            r, w = os.pipe()
+            self._fds.append(w)
+            return r, w
+        log = Path(self._dir.name) / "logs" / "gnuradio_test.log"
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("gnuradio.gr", None)
+            cap = GnuRadioLogCapture.install(log, platform="win32",
+                                             set_std_handle=fake_handle)
+        return cap, self._fds[-1]
+
+    def _wait_for(self, cond):
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not cond():
+            time.sleep(0.02)
+        self.assertTrue(cond(), "capture thread did not deliver in time")
+
+    def test_gnuradio_is_told_to_log_to_stderr(self):
+        self._install()
+        self.assertEqual(os.environ[GR_LOG_ENV], "stderr")
+
+    def test_off_windows_it_only_sets_the_route(self):
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("gnuradio.gr", None)
+            self.assertIsNone(GnuRadioLogCapture.install(
+                Path(self._dir.name) / "x.log", platform="linux"))
+        self.assertEqual(os.environ[GR_LOG_ENV], "stderr")
+
+    def test_too_late_after_gnuradio_is_imported(self):
+        with mock.patch.dict(sys.modules, {"gnuradio.gr": object()}):
+            self.assertIsNone(GnuRadioLogCapture.install(
+                Path(self._dir.name) / "x.log", platform="win32",
+                set_std_handle=lambda: self.fail("must not redirect")))
+
+    def test_reports_are_counted_and_supported_on_a_console(self):
+        cap, w = self._install()
+        watcher = OverloadWatcher(capture=cap).start()
+        os.write(w, DETECTED + CORRECTED)
+        self._wait_for(lambda: watcher.counts["overload_corrected"] == 1)
+        c = watcher.stop()
+        self.assertEqual(c["overload_events"], 1)
+        self.assertTrue(c["supported"])
+        self.assertEqual(c["route"], "gnuradio_log")
+
+    def test_lines_go_to_a_timestamped_file_not_the_console(self):
+        cap, w = self._install()
+        watcher = OverloadWatcher(capture=cap).start()
+        os.write(w, b"rspdx :info: total samples: [1,0]\r\n" + DETECTED)
+        self._wait_for(lambda: watcher.counts["overload_detected"] == 1)
+        watcher.stop()
+        text = Path(cap.log_path).read_text(encoding="utf-8")
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}"
+                                   r"\+00:00 rspdx :warning: overload detected")
+        self.assertIn("[startup]", lines[1])
+        self.assertNotIn("\r", text)
+
+    def _phase_after(self, seconds, last="retune"):
+        cap, w = self._install()
+        t_change = time.time() - seconds
+        ctx = {"band": "uhf_lmr", "center_hz": 463.856375e6,
+               "retune": t_change if last == "retune" else t_change - 60,
+               "gain": t_change - 60 if last == "retune" else t_change}
+        watcher = OverloadWatcher(capture=cap, context=lambda: ctx).start()
+        os.write(w, DETECTED)
+        self._wait_for(lambda: watcher.counts["overload_detected"] == 1)
+        watcher.stop()
+        return watcher.as_metadata()
+
+    def test_an_overload_just_after_a_retune_is_settling(self):
+        m = self._phase_after(0.5)
+        e = m["recent_events"][0]
+        self.assertEqual(e["phase"], "settling")
+        self.assertEqual(e["band"], "uhf_lmr")
+        self.assertAlmostEqual(e["center_mhz"], 463.856375)
+        self.assertEqual(e["last_change"], "retune")
+        self.assertEqual(m["by_phase"], {"settling": 1})
+        self.assertEqual(m["by_band"], {"uhf_lmr": 1})
+
+    def test_an_overload_mid_dwell_is_dwell(self):
+        """The kind that biases a duty cycle."""
+        e = self._phase_after(10.0)["recent_events"][0]
+        self.assertEqual(e["phase"], "dwell")
+
+    def test_a_gain_change_counts_as_a_change(self):
+        e = self._phase_after(0.3, last="gain")["recent_events"][0]
+        self.assertEqual((e["phase"], e["last_change"]), ("settling", "gain"))
+
+    def test_metadata_names_the_log_without_its_directory(self):
+        """Datasets go to volunteers; an absolute path carries the account
+        name (CLAUDE.md, minimum disclosure)."""
+        cap, w = self._install()
+        m = OverloadWatcher(capture=cap).start().as_metadata()
+        self.assertEqual(m["log_file"], "gnuradio_test.log")
+        self.assertEqual(m["verdict"], "none_captured")
+        self.assertIn("GNU Radio's log", m["interpretation"])
+
+    def test_the_watcher_finds_an_installed_capture_by_itself(self):
+        """The backend constructs OverloadWatcher() with no capture
+        argument; it must still use the capture __main__ installed."""
+        cap, _ = self._install()
+        self.assertEqual(OverloadWatcher().counts["route"], "gnuradio_log")
 
 
 if __name__ == "__main__":

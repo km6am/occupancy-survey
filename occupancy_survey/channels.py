@@ -476,6 +476,10 @@ def load_channel_list(path) -> list[BandPlan]:
             expected_occupancy=entry.get("expected_occupancy"),
             explicit_channels_hz=freqs,
             front_end=(base.front_end if base else FrontEnd()),
+            # Measured 2026-11-02: without this the targeted FM control ran
+            # on the 25th percentile the grid band had already been moved
+            # off, because the city's FM band is too dense for it.
+            baseline_percentile=(base.baseline_percentile if base else None),
             targeted=True,
             note=f"targeted: {len(freqs)} FCC-derived channels from "
                  f"{path}. A targeted list CANNOT find a busy channel with "

@@ -213,7 +213,11 @@ class GnuRadioBackend(Backend):
         # overload from there: one run printed `overload corrected` with no
         # preceding `detected`, entirely within that window, and the
         # preflight line below it said "none reported in this sweep".
-        self._overload = OverloadWatcher().start()
+        self._band_now = None
+        self._center = 0.0
+        self._retuned_at = None
+        self._gain_set_at = None
+        self._overload = OverloadWatcher(context=self._overload_context).start()
         try:
             self._init(sdr_config, create_source, fft_size, integration_s,
                        settle_s)
@@ -278,6 +282,15 @@ class GnuRadioBackend(Backend):
         self._running = False
 
     # ----------------------------------------------------------------- #
+
+    def _overload_context(self) -> dict:
+        """What the receiver is doing now, for timestamping a report.
+
+        Read from the capture thread without a lock: each field is a single
+        rebinding, and a report racing a retune is ambiguous anyway.
+        """
+        return {"band": self._band_now, "center_hz": self._center,
+                "retune": self._retuned_at, "gain": self._gain_set_at}
 
     def overload_reports(self) -> dict:
         """The API's own overload counts for this run.
@@ -345,6 +358,7 @@ class GnuRadioBackend(Backend):
         if abs(center_hz - self._center) < 1.0:
             return
         self._center = float(center_hz)
+        self._retuned_at = time.time()
         self._set_center(self._center)
         self._note_accepted_gain()
         self._sink.reset()
@@ -583,10 +597,12 @@ class GnuRadioBackend(Backend):
         band happened to come before it.
         """
         cfg = self._config
+        self._band_now = band_name
         if getattr(cfg, "device_type", "").lower() != "rspdx":
             return Backend.set_band_gain(self, band_name)
         overrides = getattr(cfg, "band_rf_gain_reduction_db", None) or {}
         rf = float(overrides.get(band_name, cfg.rf_gain_reduction_db))
+        self._gain_set_at = time.time()
         self._source.set_gain(-rf, "RF")
         self._rf_reduction_now = rf
         self._sink.reset()
@@ -643,6 +659,7 @@ class GnuRadioBackend(Backend):
         base = self._read_gain_stages().get("RF") if offset_db else None
         try:
             # SDRplay gain is a REDUCTION, so less gain is MORE reduction.
+            self._gain_set_at = time.time()
             self._source.set_gain(-(rf - offset_db), "RF")
         except Exception:                                # pragma: no cover
             self._achieved_offset_db = None

@@ -285,6 +285,17 @@ def main(argv=None) -> int:
             return 2
     if args.out_dir:
         cfg.out_dir = args.out_dir
+    if (cfg.sdr.backend or "").lower() in ("gnuradio", "gr", "rspdx"):
+        # Before ANYTHING imports gnuradio -- preflight does, to check it.
+        # The SDRplay overload reports are GNU Radio log lines, and both
+        # where they go and the handle they are written to are fixed when
+        # its logging starts. See overload_watch.py.
+        from occupancy_survey.overload_watch import GnuRadioLogCapture
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        cap = GnuRadioLogCapture.install(
+            Path(cfg.out_dir) / "logs" / f"gnuradio_{stamp}.log")
+        if cap is not None:
+            logger.info("GNU Radio / SDRplay messages -> %s", cap.log_path)
     if args.channels:
         from occupancy_survey.channels import load_channel_list
         try:
