@@ -127,6 +127,16 @@ def _floats(text: str):
     return out
 
 
+def _band_spans(bands):
+    return [(b.name, b.freq_min_hz, b.freq_max_hz, b.role) for b in bands]
+
+
+def _band_of(spans, hz: float):
+    """(name, role) of the first band holding hz, or None."""
+    return next(((n, role) for n, lo, hi, role in spans if lo <= hz <= hi),
+                None)
+
+
 def parse_emitters(csv_path: Path, bands) -> list[dict]:
     """Per-emitter predictions, restricted to the surveyed bands.
 
@@ -135,7 +145,7 @@ def parse_emitters(csv_path: Path, bands) -> list[dict]:
     """
     from occupancy_survey.channels import continuity_for
 
-    spans = [(b.name, b.freq_min_hz, b.freq_max_hz, b.role) for b in bands]
+    spans = _band_spans(bands)
     rows = []
     with csv_path.open(newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
@@ -168,8 +178,7 @@ def parse_emitters(csv_path: Path, bands) -> list[dict]:
 
             for mhz in _floats(rec.get("rf_freqs_mhz")):
                 hz = mhz * 1e6
-                band = next(((n, role) for n, lo, hi, role in spans
-                             if lo <= hz <= hi), None)
+                band = _band_of(spans, hz)
                 if band is None:
                     continue
                 proxy = None
