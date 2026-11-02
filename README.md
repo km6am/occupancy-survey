@@ -234,6 +234,66 @@ The control band does double duty: it calibrates the detection threshold,
 and the weakest control channel actually heard sets an **empirical
 audibility floor** that makes "predicted but never active" mean something.
 
+### What a `/2` prediction changes in the validator
+
+| | with `/1` | with `/2` |
+|---|---|---|
+| audibility floor | `ERP/d²`, frequency-blind | **dBm**, from `p_dbm_ref` |
+| predicted-but-silent | two-way: above or below the floor | **three-way**: anomaly / undetermined / expected |
+| path model | no test | **FM residual by path class** |
+
+The three-way split exists because the two-way one puts every channel
+*near* the floor into the anomaly list, where the model's own error band
+says it does not belong. A channel is an **anomaly** only when it sits
+above the floor by more than its own `error_db`; within that band it is
+**undetermined**, which is a statement about the measurement and not about
+the transmitter. A row with no level, or no error band, is undetermined
+rather than an anomaly — calling the margin significant without the band
+would manufacture a finding.
+
+The dBm floor is *less* frequency-blind than the proxy — at equal field a
+matched antenna's capture area grows as λ², about 9.5 dB between 150 and
+450 MHz, which `ERP/d²` cannot see. It is **not** frequency-correct:
+`p_dbm_ref` is computed at a reference gain, not this antenna's, which also
+varies with frequency. Transferring an FM-derived floor to 450 MHz is still
+an extrapolation, just a smaller one.
+
+**The FM residual by path class is the only new test that discriminates.**
+For a control carrier that is on continuously, measured excess-dB median
+minus `p_dbm_ref` is the receive chain's unknown constant plus whatever the
+model got wrong. The constant is the same for every channel, so its
+absolute value says nothing — but it cannot hide a *difference* between
+`los` and `diffracted` carriers. If the diffraction model is right, both
+classes share the offset; a systematic gap is path-model error, and a
+positive gap means diffraction loss was overestimated. The gap is only
+readable against the within-class scatter, so a gap smaller than the IQR it
+sits inside is reported as no evidence either way.
+
+It often cannot run: broadcast-FM sites are high and mostly line of sight,
+so the diffracted class is frequently empty. The tool says `CANNOT RUN`
+with the class counts rather than printing a number.
+
+### Intermod is the error that flatters the comparison
+
+Products land at frequencies set by the **strong** emitters, so they
+correlate with exactly the channels the prediction calls strong, and they
+read as carriers. An overloaded front end therefore *raises* measured
+occupancy on predicted-strong channels — the direction that makes the model
+look right. Both the figure and the report say so whenever no check was
+supplied:
+
+```bash
+python -m occupancy_survey --config config.yaml --intermod-check --intermod-json out/intermod.json
+```
+
+```bash
+python tools/validate_occupancy.py --prediction out/qth_prediction/prediction.json --intermod-report out/intermod.json data/occ_*.json.gz
+```
+
+Bands present in the datasets but absent from the report are named as
+unchecked, and a band with suspect or too-steep channels is explicitly
+**not** called clean.
+
 > **Only broadcast FM is a control**, and the list is short on purpose.
 > NOAA Weather Radio was one until 2026-10-28, on the reasoning that a 24/7
 > automated service implies a continuous carrier. It does not — *"the
