@@ -311,6 +311,18 @@ class MergedChannel:
             above = int(self.hist[first:].sum()) + self.overflow
         return above / self.n_decided
 
+    def excess_db_percentile(self, pct: float) -> float | None:
+        """Excess-dB percentile over this channel's pooled histogram.
+
+        Only meaningful against a signal that is present for most of the
+        samples -- a continuous carrier. On an intermittent channel the
+        median is the noise floor, not the signal, so a caller must know
+        the duty cycle before reading anything into this.
+        """
+        from occupancy_survey.presence import percentile_from_hist
+        return percentile_from_hist(self.hist, self.underflow, self.overflow,
+                                    self.hist_lo_db, self.hist_bin_db, pct)
+
     @property
     def comparable(self) -> bool:
         """False when pooled across different channel widths.
