@@ -161,6 +161,66 @@ python tools/validate_occupancy.py --prediction out/qth_prediction/prediction.js
 pseudo-summit file — **read-only**: existing FCC cache, `--no-download`,
 scratch output directory, nothing written into that repo.
 
+### Two prediction engines
+
+| | `--engine pipeline` (default) | `--engine qth-cli` |
+|---|---|---|
+| runs | `sota_rf_sources.py` | `web/map/qth_cli.mjs` |
+| terrain | none — every path is line of sight | SRTM diffraction |
+| channels per site | lowest 40 | all |
+| ordering | ERP/d², frequency-blind | same proxy, with terrain and the FM vertical pattern |
+| level | none | `p_dbm_ref` with an `error_db` band |
+| writes | `qth-prediction/1` | `qth-prediction/2` |
+| needs | Python, the FCC cache | Node ≥ 18, the map's exported tiles |
+
+Both emit `field_proxy_w_per_m2` with the same meaning and units, so one
+validator reads either; `/2` adds `p_dbm_ref` and `path`, which is what
+makes the audibility floor frequency-aware and the path residual a
+discriminator rather than a restatement of the ranking.
+
+```bash
+python tools/qth_predict.py --engine qth-cli --lat <LAT> --lon <LON> \
+    --ant-agl 10 --dem-2s ~/srtm2s --data ~/sota-rf/out/export
+```
+
+- **`--ant-agl` is required and never defaulted.** It moves every
+  diffraction loss, so a guessed height changes which channels are listed
+  at all. `--config CONFIG.YAML` reads `site.antenna_height_m` instead.
+- **Without `--dem-2s` the tool refuses** unless you pass
+  `--allow-remote-terrain`: the CLI would otherwise fetch terrain tiles for
+  a 120 km box around your coordinates from AWS, which tells a third party
+  roughly where the receiver is.
+- **Without `--data` it reads the live map's tiles**, which are older — no
+  callsigns and no full per-site channel lists — and that silently shortens
+  the prediction rather than failing.
+- **A `/2` file locates the station.** Rows carry `distance_m` and emitter
+  coordinates, and two of those trilaterate the receiver. It stays local;
+  the submit path's field allowlist is the only safe exit. `bearing_deg`
+  and `fspl_db` are deliberately not carried.
+- `pipeline` is still the default only because `qth_cli.mjs` is not on
+  `sota-rf`'s mainline yet. Flip it when that lands.
+
+> The `/2` channel list is **much** longer: 69,751 channels in these five
+> bands at one Oakland point against 188 in the current targeted list
+> (**measured**, `sota-rf`, 2026-10-31). The 120 km cap, not the −130 dBm
+> floor, is what bounds it — only 237 of 93,324 channels fell below the
+> floor.
+>
+> Airtime is **unchanged**: at the 4.8 MHz usable window both lists already
+> need the full-span cover, 14 tune steps across the five bands
+> (**measured**, with uniformly spread synthetic lists of each size). That
+> assumption is the weak link — `cover_channels()` is a greedy interval
+> cover, so a *clustered* short list would need fewer steps, and a
+> proxy-selected 188-channel list may well be clustered. Measure it on the
+> real list before relying on it.
+>
+> What the longer list does cost is interval-file size and, more
+> importantly, **false alarms**, which `detector.false_alarm_rate()`
+> charges per channel: 370× the channels is 370× the spurious actives, and
+> they all land in the *busy with no FCC record* quadrant and swamp it.
+> Select with `make_channel_list.py --top-per-band` (default 60) before
+> surveying rather than feeding the whole list in.
+
 The figure has two panels and only the second one earns anything. Occupancy
 against predicted field strength is merely *consistent* with the model —
 a detector that fired on noise would also put the strong emitters on top.
