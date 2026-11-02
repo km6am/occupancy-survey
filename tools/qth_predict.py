@@ -646,6 +646,12 @@ def main(argv=None) -> int:
             "ant_agl_m": ant_agl_m,
             "min_dbm": args.min_dbm,
             "ref_gain_dbi": args.ref_gain_dbi,
+            # The span actually queried, not the band list: the feedback
+            # body sends these, and deriving them from the surviving rows
+            # afterwards would report the narrowest band that happened to
+            # have a channel in it.
+            "f_min_mhz": min(b.freq_min_hz for b in bands) / 1e6,
+            "f_max_mhz": max(b.freq_max_hz for b in bands) / 1e6,
             "bands": [b.name for b in bands],
             "qth_rfi_report": str(report),
             "qth_rfi_schema": header.get("schema"),
