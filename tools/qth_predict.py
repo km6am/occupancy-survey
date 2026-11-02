@@ -616,8 +616,16 @@ def _summarise(rows, engine: str) -> None:
             paths[str(r.get("path"))] = paths.get(str(r.get("path")), 0) + 1
         print("  path:        "
               + ", ".join(f"{k} {v}" for k, v in sorted(paths.items())))
-        print("\nstrongest predicted (model dBm at the reference gain, an "
-              "UPPER BOUND with the stated error band):")
+        # These rows are in the REPORT's order, which sota-rf ranks by
+        # field (V/m) on purpose: a matched antenna's aperture grows as
+        # lambda^2, so dBm into one fixed gain puts every AM carrier above
+        # the VHF/UHF channels a survey tunes. So the first row here is not
+        # the strongest p_dbm_ref, and the heading must not say it is --
+        # measured on a real report, where the top row read -32.4 dBm while
+        # a TV carrier further down read -29.0.
+        print("\ntop of the report's ranking -- by FIELD, not by dBm, so a "
+              "stronger p_dbm_ref may appear below.\n(model dBm at the "
+              "reference gain, an UPPER BOUND with the stated error band):")
         for r in rows[:12]:
             p_dbm = r.get("p_dbm_ref")
             err = r.get("error_db")
