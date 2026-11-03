@@ -156,6 +156,27 @@ def tag_and_select(prediction: dict, summit_emitters: dict,
     return selected
 
 
+def narrow_controls(selected: dict, plans: dict, span_mhz: float) -> dict:
+    """Keep each control band to one window around its strongest station.
+
+    A control answers "is the receive path and threshold working", and a
+    few strong stations in one tuning answer it as well as eighty-five
+    across five. The rest of the FM band is airtime taken from the
+    land-mobile channels. The window is centred on the strongest predicted
+    station, so the control keeps the one most certain to be heard.
+    """
+    out = dict(selected)
+    half = 0.5 * span_mhz * 1e6
+    for band, rows in selected.items():
+        plan = plans.get(band)
+        if plan is None or plan.role != "control" or not rows:
+            continue
+        top = max(rows, key=lambda r: r["field_proxy_w_per_m2"] or -1.0)
+        out[band] = [r for r in rows
+                     if abs(r["freq_hz"] - top["freq_hz"]) <= half]
+    return out
+
+
 def main(argv=None) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from occupancy_survey.channels import BAND_PLANS
@@ -169,6 +190,10 @@ def main(argv=None) -> int:
                     help="strongest N predicted channels per band")
     ap.add_argument("--min-proxy", type=float, default=None,
                     help="drop channels below this ERP/d^2 (uncalibrated)")
+    ap.add_argument("--control-span-mhz", type=float, default=None,
+                    help="keep control bands (broadcast FM) to this span "
+                         "around the strongest station, e.g. 2.4 for one "
+                         "tune step. Default: every predicted station")
     ap.add_argument("--out", default="./out/channels.json")
     args = ap.parse_args(argv)
 
@@ -181,6 +206,9 @@ def main(argv=None) -> int:
 
     selected = tag_and_select(prediction, summit_emitters,
                               args.top_per_band, args.min_proxy)
+    if args.control_span_mhz is not None:
+        selected = narrow_controls(selected, BAND_PLANS,
+                                   args.control_span_mhz)
 
     bands_out = {}
     for band_name, rows in sorted(selected.items()):
@@ -226,6 +254,7 @@ def main(argv=None) -> int:
         "summit_csv": Path(str(summit_path)).name if summit_path else None,
         "top_per_band": args.top_per_band,
         "min_proxy": args.min_proxy,
+        "control_span_mhz": args.control_span_mhz,
         "query": {
             "grid_square": where,
             "location_precision": ("maidenhead 4-character"

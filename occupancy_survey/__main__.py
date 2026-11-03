@@ -99,15 +99,17 @@ def _print_plan(cfg: AppConfig) -> None:
           f"{cfg.detection.baseline_percentile:.0f}th-percentile baseline")
     print()
     print(f"{'band':<14} {'role':<8} {'span/MHz':>9} {'steps':>6} "
-          f"{'channels':>9}")
+          f"{'channels':>9}  visited")
     for b in bands:
         from occupancy_survey.schedule import tune_steps
+        n = cfg.sampling.visit_every(b.name)
         print(f"{b.name:<14} {b.role:<8} {b.span_hz/1e6:9.3f} "
               f"{len(tune_steps(b, cfg.sampling)):6d} "
-              f"{len(b.channels()):9d}")
+              f"{len(b.channels()):9d}  "
+              + ("every pass" if n == 1 else f"every {n} passes"))
     print()
     print(f"cycle time     {summary['cycle_time_s']:.0f} s "
-          f"({summary['tune_steps']} tune steps x "
+          f"({summary['tune_steps_per_pass']:.1f} tune steps per pass x "
           f"{cfg.sampling.dwell_s:.0f} s dwell)")
     print(f"visits/interval {summary['visits_per_band_per_interval']} per "
           f"tune step per {cfg.sampling.interval_s/60:.0f} min")
@@ -147,7 +149,8 @@ def _print_plan(cfg: AppConfig) -> None:
         print()
         print("presence reference (absence here indicts the RECEIVER):")
         for b in presence_bands:
-            steps = len(_ts(b, cfg.sampling))
+            steps = (len(_ts(b, cfg.sampling))
+                     / cfg.sampling.visit_every(b.name))
             per_cycle = steps * cfg.sampling.dwell_s
             per_hour = (per_cycle * 3600.0 / summary["cycle_time_s"]
                         if summary["cycle_time_s"] else 0.0)

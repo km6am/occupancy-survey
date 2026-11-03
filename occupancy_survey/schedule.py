@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,11 @@ class SamplingDesign:
     usable_bandwidth_hz: float = 6_000_000.0
     usable_fraction: float = 0.8
     interval_s: float = 3600.0
+    # band name -> visit that band on every Nth pass only. For references,
+    # not targets: broadcast FM and NWR answer "is the receiver working",
+    # which a few looks an hour settle, and every pass spent on them is a
+    # pass not spent on the land-mobile channels the survey exists for.
+    band_visit_every: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.integration_s <= 0 or self.dwell_s <= 0:
@@ -66,6 +71,14 @@ class SamplingDesign:
             raise ValueError("dwell_s must be at least one integration period")
         if not 0.0 <= self.jitter_fraction < 1.0:
             raise ValueError("jitter_fraction must be in [0, 1)")
+        for name, n in dict(self.band_visit_every).items():
+            if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+                raise ValueError(
+                    f"band_visit_every[{name!r}] must be a whole number of "
+                    f"passes >= 1, got {n!r}")
+
+    def visit_every(self, band_name: str) -> int:
+        return int(self.band_visit_every.get(band_name, 1))
 
     @property
     def sweeps_per_visit(self) -> int:
@@ -81,6 +94,7 @@ class SamplingDesign:
             "usable_fraction": self.usable_fraction,
             "interval_s": self.interval_s,
             "sweeps_per_visit": self.sweeps_per_visit,
+            "band_visit_every": dict(self.band_visit_every),
         }
 
 
@@ -231,20 +245,28 @@ def _finalise_of(steps: list[TuneStep]) -> list[TuneStep]:
             for s in steps]
 
 
+def steps_per_pass(bands, design: SamplingDesign) -> float:
+    """Mean tune steps per pass, counting a band visited every Nth pass
+    as 1/N of its steps."""
+    return sum(len(tune_steps(b, design)) / design.visit_every(b.name)
+               for b in bands)
+
+
 def cycle_time_s(bands, design: SamplingDesign,
                  retune_overhead_s: float = 0.5) -> float:
-    """Wall-clock seconds for one pass over every tune step of every band.
+    """Mean wall-clock seconds for one pass over the schedule.
 
     This, not `revisit_target_s`, is the real revisit interval when the
     schedule cannot keep up. A design whose cycle time exceeds its revisit
     target is not wrong, but it is not doing what its configuration says,
     and `Schedule.warnings()` says so rather than letting the metadata
     claim a revisit the run never achieved.
+
+    It is the revisit interval of every band visited on every pass. A band
+    with `band_visit_every` N is revisited every N cycles.
     """
-    total = 0
-    for b in bands:
-        total += len(tune_steps(b, design))
-    return total * (design.dwell_s + retune_overhead_s)
+    return steps_per_pass(bands, design) * (design.dwell_s
+                                            + retune_overhead_s)
 
 
 # --------------------------------------------------------------------------- #
@@ -383,6 +405,7 @@ class Schedule:
         self._bands = list(bands)
         self._design = design
         self._rng = random.Random(seed)
+        self._pass = 0
         self._steps: list[tuple[object, TuneStep]] = []
         for b in self._bands:
             for st in tune_steps(b, design):
@@ -401,10 +424,18 @@ class Schedule:
         return self._design.dwell_s * (1.0 + self._rng.uniform(-f, f))
 
     def visits(self, cycles: int):
-        """Yield (band, tune_step, dwell_s) for `cycles` full passes."""
+        """Yield (band, tune_step, dwell_s) for `cycles` full passes.
+
+        A band with `band_visit_every` N appears on passes 0, N, 2N, ...
+        counted across calls, so the survey loop's one-pass-at-a-time calls
+        see the same schedule as one long call. Pass 0 has every band, so a
+        dead reference shows up in the first pass rather than the Nth.
+        """
         for _ in range(int(cycles)):
             for band, step in self._steps:
-                yield band, step, self.jittered_dwell_s()
+                if self._pass % self._design.visit_every(band.name) == 0:
+                    yield band, step, self.jittered_dwell_s()
+            self._pass += 1
 
     @property
     def continuous_dwell(self) -> bool:
@@ -457,6 +488,18 @@ class Schedule:
                 f"samples at all in some intervals, and their occupancy will "
                 f"be null rather than zero."
             )
+        names = {b.name for b in self._bands}
+        for name, n in sorted(self._design.band_visit_every.items()):
+            if name not in names:
+                out.append(
+                    f"band_visit_every names {name!r}, which is not in this "
+                    f"schedule; it has no effect.")
+            elif n * cycle > self._design.interval_s:
+                out.append(
+                    f"{name} is visited every {n} passes, about every "
+                    f"{n * cycle:.0f} s -- longer than interval_s "
+                    f"{self._design.interval_s:.0f} s, so some intervals "
+                    f"will hold no {name} samples at all.")
         if self._design.jitter_fraction == 0.0:
             out.append(
                 "jitter_fraction is 0: a fixed revisit period can alias "
@@ -481,11 +524,15 @@ class Schedule:
         return {
             **self._design.as_metadata(),
             "tune_steps": len(self._steps),
+            "tune_steps_per_pass": steps_per_pass(self._bands, self._design),
             "cycle_time_s": cycle,
             "visits_per_band_per_interval": visits_per_interval,
+            "visits_note": "per tune step per interval for a band visited "
+                           "every pass; divide by band_visit_every for one "
+                           "that is not",
             "observed_time_fraction": min(
-                1.0, (len(self._steps) * self._design.dwell_s) / max(
-                    cycle, 1e-9)),
+                1.0, (steps_per_pass(self._bands, self._design)
+                      * self._design.dwell_s) / max(cycle, 1e-9)),
             "min_detectable_burst_s_at_6db_margin": floor_6db,
             "blind_spot": {
                 "shorter_than_s": floor_6db,

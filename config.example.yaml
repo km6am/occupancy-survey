@@ -117,6 +117,15 @@ sampling:
   # One output file per interval.
   interval_s: 3600.0
 
+  # Visit a band on every Nth pass only. For the references, not the
+  # targets: broadcast FM and NWR answer "is the receiver working", which a
+  # few looks an hour settle, and their tune steps otherwise take nearly
+  # half of every pass. `--plan` shows the effect. With a targeted list,
+  # also cut FM to one window: make_channel_list.py --control-span-mhz 2.4.
+  # band_visit_every:
+  #   bcast_fm: 4
+  #   nwr: 4
+
   # Central fraction of each tuning to trust; the edges roll off and carry
   # tuner artefacts.
   usable_fraction: 0.8
