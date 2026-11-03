@@ -87,7 +87,7 @@ class TestScannerFindsEachPattern(unittest.TestCase):
                              f"false positive on {name!r}")
 
     def test_home_paths_on_both_platforms(self):
-        for p in ("/Users/aemiller/sota-rf/x.csv", "/home/bob/data",
+        for p in ("/Users/alice/sota-rf/x.csv", "/home/bob/data",
                   r"C:\Users\carol\out"):
             f = disclosure.scan({"path": p})
             self.assertTrue(f, f"missed {p}")
